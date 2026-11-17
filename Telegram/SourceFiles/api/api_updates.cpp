@@ -76,6 +76,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/ayu_worker.h"
+#include "ayu/utils/telegram_helpers.h"
 
 
 namespace Api {
@@ -1003,7 +1004,8 @@ void Updates::updateOnline(crl::time lastNonIdleTime, bool gotOtherOffline) {
 	const auto &ghost = AyuSettings::ghost(_session);
 	const auto& config = _session->serverConfig();
 	bool isOnlineOrig = Core::App().hasActiveWindow(&session());
-	bool isOnline = ghost.sendOnlinePackets() && isOnlineOrig;
+	bool isOnline = (ghost.sendOnlinePackets()
+		|| isGhostExcludedChatOpen(_session)) && isOnlineOrig;
 
 	int updateIn = config.onlineUpdatePeriod;
 	Assert(updateIn >= 0);

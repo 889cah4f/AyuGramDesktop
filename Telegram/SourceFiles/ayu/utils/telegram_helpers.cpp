@@ -52,6 +52,7 @@
 #include "ui/text/text_entity.h"
 #include "ui/toast/toast.h"
 #include "window/window_controller.h"
+#include "window/window_session_controller.h"
 
 #include <atomic>
 #include <functional>
@@ -295,6 +296,17 @@ Fn<void()> badgeClickHandler(not_null<PeerData*> peer) {
 
 bool isGhostExcluded(not_null<PeerData*> peer) {
 	return AyuSettings::getInstance().isGhostExcluded(getDialogIdFromPeer(peer));
+}
+
+bool isGhostExcludedChatOpen(not_null<Main::Session*> session) {
+	for (const auto &controller : session->windows()) {
+		if (const auto peer = controller->activeChatCurrent().peer()) {
+			if (isGhostExcluded(peer)) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 bool isMessageHidden(const not_null<HistoryItem*> item) {
@@ -1602,7 +1614,11 @@ QString getBetterLinkPreview(const QString &url) {
 void applyGhostScheduling(
 		not_null<Main::Session*> session,
 		Api::SendOptions &options,
-		int delaySeconds) {
+		int delaySeconds,
+		PeerData *peer) {
+	if ((peer && isGhostExcluded(peer)) || isGhostExcludedChatOpen(session)) {
+		return;
+	}
 	const auto &ghost = AyuSettings::ghost(session);
 	if (ghost.isUseScheduledMessages() && !options.scheduled) {
 		const auto delay = Core::App().settings().proxy().isEnabled()

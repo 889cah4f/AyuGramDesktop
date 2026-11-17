@@ -4759,7 +4759,11 @@ void ApiWrap::sendRichMessage(
 void ApiWrap::sendMessage(
 		MessageToSend &&message,
 		std::optional<MsgId> localMessageId) {
-	applyGhostScheduling(_session, message.action.options);
+	applyGhostScheduling(
+		_session,
+		message.action.options,
+		12,
+		message.action.history->peer);
 	const auto clearReplyTo = prependPseudoReply(message);
 
 	const auto history = message.action.history;

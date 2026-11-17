@@ -11,6 +11,8 @@
 #include "base/timer.h"
 #include "base/unixtime.h"
 #include "core/application.h"
+#include "api/api_updates.h"
+#include "ayu/utils/telegram_helpers.h"
 #include "data/data_user.h"
 #include "data/entities.h"
 #include "main/main_account.h"
@@ -65,6 +67,12 @@ void runOnce() {
 				}
 
 				const auto &ghost = AyuSettings::ghost(session);
+				if (isGhostExcludedChatOpen(session)
+					&& Core::App().hasActiveWindow(session)) {
+					session->api().updates().updateOnline();
+					state[id] = true;
+					continue;
+				}
 				if (!ghost.sendOfflinePacketAfterOnline()) {
 					continue;
 				}

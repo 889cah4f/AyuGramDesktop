@@ -58,6 +58,7 @@ Main::Session *getSession(ID userId);
 void dispatchToMainThread(const std::function<void()> &callback, int delay = 0);
 ID getDialogIdFromPeer(not_null<PeerData*> peer);
 bool isGhostExcluded(not_null<PeerData*> peer);
+bool isGhostExcludedChatOpen(not_null<Main::Session*> session);
 
 ID getBareID(not_null<PeerData*> peer);
 
@@ -128,4 +129,5 @@ QString getBetterLinkPreview(const QString &url);
 void applyGhostScheduling(
 	not_null<Main::Session*> session,
 	Api::SendOptions &options,
-	int delaySeconds = 12);
+	int delaySeconds = 12,
+	PeerData *peer = nullptr);
