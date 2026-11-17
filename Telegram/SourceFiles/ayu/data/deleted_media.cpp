@@ -6,6 +6,9 @@
 // Copyright @Radolyn, 2026
 #include "ayu/data/deleted_media.h"
 
+#include "ayu/ayu_settings.h"
+#include "ayu/data/ayu_database.h"
+
 #include "core/file_location.h"
 #include "core/version.h"
 #include "settings.h"
@@ -20,6 +23,7 @@
 #include "history/history_item.h"
 #include "main/main_session.h"
 #include "storage/serialize_document.h"
+#include "storage/cache/storage_cache_database.h"
 #include "ui/image/image.h"
 
 #include <QBuffer>
@@ -28,6 +32,8 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QMimeDatabase>
+
+#include <map>
 
 namespace AyuMessages {
 namespace {
@@ -158,6 +164,229 @@ QString mediaRootPath() {
 	return cWorkingDir() + u"tdata/ayu_media/"_q;
 }
 
+namespace {
+
+enum class MediaKind {
+	Photo,
+	Video,
+	Voice,
+	Round,
+	Gif,
+	Sticker,
+	File,
+};
+
+constexpr auto kMaxSavedFileSize = int64(512 * 1024 * 1024);
+constexpr auto kStreamPartSize = int64(128 * 1024);
+constexpr auto kStreamInSlice = int64(64) * kStreamPartSize;
+constexpr auto kStreamMaxOnlyInHeader = int64(80) * kStreamPartSize;
+constexpr auto kMaxAssembledSize = int64(128 * 1024 * 1024);
+
+using StreamParts = std::map<int64, QByteArray>;
+
+[[nodiscard]] MediaKind KindOf(not_null<DocumentData*> document) {
+	if (document->isVoiceMessage()) {
+		return MediaKind::Voice;
+	} else if (document->isVideoMessage()) {
+		return MediaKind::Round;
+	} else if (document->sticker()) {
+		return MediaKind::Sticker;
+	} else if (document->isAnimation() || document->isGifv()) {
+		return MediaKind::Gif;
+	} else if (document->isVideoFile()) {
+		return MediaKind::Video;
+	}
+	return MediaKind::File;
+}
+
+[[nodiscard]] bool KindAllowed(MediaKind kind) {
+	const auto &settings = AyuSettings::getInstance();
+	switch (kind) {
+	case MediaKind::Photo: return settings.saveDeletedPhotos();
+	case MediaKind::Video: return settings.saveDeletedVideos();
+	case MediaKind::Voice: return settings.saveDeletedVoices();
+	case MediaKind::Round: return settings.saveDeletedRounds();
+	case MediaKind::Gif: return settings.saveDeletedGifs();
+	case MediaKind::Sticker: return settings.saveDeletedStickers();
+	case MediaKind::File: return settings.saveDeletedFiles();
+	}
+	return true;
+}
+
+[[nodiscard]] QByteArray ParseStreamMap(
+		StreamParts &result,
+		const QByteArray &data,
+		int64 shift,
+		int64 maxSize) {
+	const auto size = int64(data.size());
+	if (!(size % kStreamPartSize) || size == maxSize) {
+		if (size > maxSize) {
+			return {};
+		}
+		for (auto offset = int64(); offset < size; offset += kStreamPartSize) {
+			result.emplace(
+				shift + offset,
+				data.mid(offset, std::min(kStreamPartSize, size - offset)));
+		}
+		return {};
+	}
+	auto position = int64();
+	const auto takeInt = [&]() -> std::optional<uint32> {
+		if (position + int64(sizeof(uint32)) > size) {
+			return std::nullopt;
+		}
+		auto value = uint32();
+		memcpy(&value, data.constData() + position, sizeof(uint32));
+		position += sizeof(uint32);
+		return value;
+	};
+	const auto count = takeInt();
+	if (!count) {
+		return {};
+	}
+	if (!*count || *count > uint32(kStreamMaxOnlyInHeader / kStreamPartSize)) {
+		return data.mid(position);
+	}
+	for (auto i = uint32(); i != *count; ++i) {
+		const auto offset = int64(takeInt().value_or(0));
+		const auto partSize = int64(takeInt().value_or(0));
+		if (!partSize
+			|| offset >= maxSize
+			|| offset + partSize > maxSize
+			|| position + partSize > size) {
+			return {};
+		}
+		result.emplace(shift + offset, data.mid(position, partSize));
+		position += partSize;
+	}
+	return data.mid(position);
+}
+
+[[nodiscard]] int64 StreamSliceShift(int sliceNumber) {
+	return sliceNumber ? (int64(sliceNumber - 1) * kStreamInSlice) : 0;
+}
+
+[[nodiscard]] int64 StreamSliceSize(int sliceNumber, int64 size) {
+	const auto count = (size + kStreamInSlice - 1) / kStreamInSlice;
+	return !sliceNumber
+		? size
+		: (sliceNumber == count)
+		? (size - int64(sliceNumber - 1) * kStreamInSlice)
+		: kStreamInSlice;
+}
+
+[[nodiscard]] QByteArray AssembleStream(const StreamParts &parts, int64 size) {
+	auto result = QByteArray();
+	result.reserve(size);
+	auto offset = int64();
+	while (offset < size) {
+		const auto i = parts.find(offset);
+		if (i == end(parts) || i->second.isEmpty()) {
+			return {};
+		}
+		result.append(i->second);
+		offset += i->second.size();
+	}
+	if (offset != size) {
+		return {};
+	}
+	return result;
+}
+
+struct PendingMedia {
+	ID userId = 0;
+	ID dialogId = 0;
+	ID messageId = 0;
+	QString path;
+	std::string hqThumbPath;
+};
+
+void FinishPending(const PendingMedia &pending, QByteArray bytes) {
+	if (bytes.isEmpty() || bytes.startsWith("partial:")) {
+		return;
+	}
+	crl::async([=, bytes = std::move(bytes)] {
+		if (!WriteBytes(pending.path, bytes)) {
+			return;
+		}
+		AyuDatabase::updateDeletedMessageMedia(
+			pending.userId,
+			pending.dialogId,
+			pending.messageId,
+			RelativeFromAbsolute(pending.path).toStdString(),
+			pending.hqThumbPath);
+	});
+}
+
+void CopyPending(const PendingMedia &pending, const QString &source) {
+	crl::async([=] {
+		QDir().mkpath(QFileInfo(pending.path).absolutePath());
+		if (QFile::exists(pending.path)) {
+			QFile::remove(pending.path);
+		}
+		if (!QFile::copy(source, pending.path)) {
+			return;
+		}
+		AyuDatabase::updateDeletedMessageMedia(
+			pending.userId,
+			pending.dialogId,
+			pending.messageId,
+			RelativeFromAbsolute(pending.path).toStdString(),
+			pending.hqThumbPath);
+	});
+}
+
+struct StreamAssembly {
+	PendingMedia pending;
+	Storage::Cache::Key base;
+	int64 size = 0;
+	StreamParts parts;
+};
+
+void ReadStreamSlice(
+		not_null<Main::Session*> session,
+		std::shared_ptr<StreamAssembly> state,
+		int sliceNumber) {
+	const auto key = Storage::Cache::Key{
+		state->base.high,
+		state->base.low + uint64(sliceNumber),
+	};
+	session->data().cacheBigFile().get(key, [=](QByteArray &&value) {
+		if (!sliceNumber) {
+			const auto remaining = ParseStreamMap(
+				state->parts,
+				value,
+				0,
+				state->size);
+			if (state->size > kStreamMaxOnlyInHeader && !remaining.isEmpty()) {
+				[[maybe_unused]] const auto ignore = ParseStreamMap(
+					state->parts,
+					remaining,
+					StreamSliceShift(1),
+					StreamSliceSize(1, state->size));
+			}
+		} else if (!value.isEmpty()) {
+			[[maybe_unused]] const auto ignore = ParseStreamMap(
+				state->parts,
+				value,
+				StreamSliceShift(sliceNumber),
+				StreamSliceSize(sliceNumber, state->size));
+		}
+		const auto slices = (state->size <= kStreamMaxOnlyInHeader)
+			? 0
+			: int((state->size + kStreamInSlice - 1) / kStreamInSlice);
+		if (sliceNumber < slices) {
+			crl::on_main(session, [=] {
+				ReadStreamSlice(session, state, sliceNumber + 1);
+			});
+			return;
+		}
+		FinishPending(state->pending, AssembleStream(state->parts, state->size));
+	});
+}
+
+} // namespace
+
 void saveMediaForMessage(not_null<HistoryItem*> item, AyuMessageBase &message) {
 	message.mediaPath = "/";
 	message.documentType = int(SavedMediaType::None);
@@ -173,6 +402,11 @@ void saveMediaForMessage(not_null<HistoryItem*> item, AyuMessageBase &message) {
 	const auto base = folder + QString::number(message.messageId);
 
 	if (const auto photo = media->photo()) {
+		if (!KindAllowed(MediaKind::Photo)) {
+			return;
+		}
+		message.documentType = int(SavedMediaType::Photo);
+		message.mimeType = "image/jpeg";
 		const auto view = photo->activeMediaView()
 			? photo->activeMediaView()
 			: photo->createMediaView();
@@ -196,55 +430,100 @@ void saveMediaForMessage(not_null<HistoryItem*> item, AyuMessageBase &message) {
 			return;
 		}
 		message.mediaPath = RelativeFromAbsolute(path).toStdString();
-		message.documentType = int(SavedMediaType::Photo);
-		message.mimeType = "image/jpeg";
 		SaveThumbnail(image, base, message);
 		return;
 	}
 
-	if (const auto document = media->document()) {
-		const auto view = document->activeMediaView()
-			? document->activeMediaView()
-			: document->createMediaView();
-		auto bytes = QByteArray();
-		const auto existing = document->filepath(true);
-		auto saved = false;
-		const auto ext = ExtensionFor(document, u".bin"_q);
-		const auto path = base + ext;
-		if (!existing.isEmpty() && QFile::exists(existing)) {
-			QDir().mkpath(folder);
-			if (QFile::exists(path)) {
-				QFile::remove(path);
-			}
-			saved = QFile::copy(existing, path);
-		}
-		if (!saved) {
-			bytes = view->bytes();
-			saved = WriteBytes(path, bytes);
-		}
-		if (!saved) {
-			if (const auto thumb = view->thumbnail()) {
-				SaveThumbnail(thumb->original(), base, message);
-				message.documentType = int(SavedMediaType::Document);
-				message.mimeType = document->mimeString().toStdString();
-				message.documentSerialized = SerializeDocument(document);
-			}
-			return;
-		}
-		message.mediaPath = RelativeFromAbsolute(path).toStdString();
-		message.documentType = int(SavedMediaType::Document);
-		message.mimeType = document->mimeString().toStdString();
-		message.documentSerialized = SerializeDocument(document);
-		if (const auto thumb = view->thumbnail()) {
-			SaveThumbnail(thumb->original(), base, message);
-		} else if (document->isVideoFile()
-			|| document->isVideoMessage()
-			|| document->isGifv()) {
-			if (const auto good = view->goodThumbnail()) {
-				SaveThumbnail(good->original(), base, message);
-			}
+	const auto document = media->document();
+	if (!document || !KindAllowed(KindOf(document))) {
+		return;
+	}
+	message.documentType = int(SavedMediaType::Document);
+	message.mimeType = document->mimeString().toStdString();
+	message.documentSerialized = SerializeDocument(document);
+
+	const auto view = document->activeMediaView()
+		? document->activeMediaView()
+		: document->createMediaView();
+	if (const auto thumb = view->thumbnail()) {
+		SaveThumbnail(thumb->original(), base, message);
+	} else if (const auto good = view->goodThumbnail()) {
+		SaveThumbnail(good->original(), base, message);
+	}
+	const auto bytes = view->bytes();
+	if (!bytes.isEmpty()) {
+		const auto path = base + ExtensionFor(document, u".bin"_q);
+		if (WriteBytes(path, bytes)) {
+			message.mediaPath = RelativeFromAbsolute(path).toStdString();
 		}
 	}
+}
+
+void fetchDeletedMedia(
+		not_null<HistoryItem*> item,
+		const AyuMessageBase &message) {
+	if (message.mediaPath != "/"
+		|| message.documentType == int(SavedMediaType::None)) {
+		return;
+	}
+	const auto media = item->media();
+	if (!media) {
+		return;
+	}
+	const auto folder = MessageFolder(message.userId, message.dialogId);
+	const auto base = folder + QString::number(message.messageId);
+	auto pending = PendingMedia{
+		.userId = message.userId,
+		.dialogId = message.dialogId,
+		.messageId = message.messageId,
+		.hqThumbPath = message.hqThumbPath,
+	};
+	const auto owner = &item->history()->owner();
+
+	if (const auto photo = media->photo()) {
+		pending.path = base + u".jpg"_q;
+		for (const auto size : {
+				Data::PhotoSize::Large,
+				Data::PhotoSize::Thumbnail }) {
+			const auto key = photo->location(size).file().cacheKey();
+			if (key) {
+				owner->cache().get(key, [=](QByteArray &&value) {
+					FinishPending(pending, std::move(value));
+				});
+				return;
+			}
+		}
+		return;
+	}
+
+	const auto document = media->document();
+	if (!document || document->size <= 0 || document->size > kMaxSavedFileSize) {
+		return;
+	}
+	pending.path = base + ExtensionFor(document, u".bin"_q);
+
+	const auto existing = document->filepath(true);
+	if (!existing.isEmpty() && QFile::exists(existing)) {
+		CopyPending(pending, existing);
+		return;
+	}
+	if (document->saveToCache()) {
+		owner->cache().get(document->cacheKey(), [=](QByteArray &&value) {
+			FinishPending(pending, std::move(value));
+		});
+		return;
+	}
+	if (document->size > kMaxAssembledSize) {
+		return;
+	}
+	const auto state = std::make_shared<StreamAssembly>();
+	state->pending = pending;
+	state->base = document->bigFileBaseCacheKey();
+	state->size = document->size;
+	if (!state->base) {
+		return;
+	}
+	ReadStreamSlice(&owner->session(), state, 0);
 }
 
 PhotoData *restorePhoto(

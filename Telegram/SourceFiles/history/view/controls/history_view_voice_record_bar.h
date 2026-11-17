@@ -98,6 +98,7 @@ public:
 	[[nodiscard]] rpl::producer<Error> errors() const;
 
 	void requestToSendWithOptions(Api::SendOptions options);
+	void sendListenData(Api::SendOptions options);
 
 	void setStartRecordingFilter(FilterCallback &&callback);
 	void setTTLFilter(FilterCallback &&callback);
@@ -148,7 +149,7 @@ private:
 
 	void startRecording();
 	void prepareOnSendPress();
-	void applyListenTrimForResume();
+	void applyListenTrimForResume(Fn<void()> done);
 	void clearResumePrefix();
 	void clearResumeState();
 	void setupResumePrefixFromCurrentData();

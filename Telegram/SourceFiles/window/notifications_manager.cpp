@@ -457,6 +457,17 @@ void System::schedule(Data::ItemNotification notification) {
 		thread->popNotification(notification);
 		return;
 	}
+	if (type == Data::ItemNotificationType::Message) {
+		const auto history = item->history();
+		const auto dialogId = getDialogIdFromPeer(history->peer);
+		if (AyuSettings::getInstance().isFirstMessageOnly(dialogId)
+			&& (history->unreadCountKnown()
+				? (history->unreadCount() > 0)
+				: history->unreadMark())) {
+			thread->popNotification(notification);
+			return;
+		}
+	}
 	const auto ready = (skip.value != SkipState::Unknown)
 		&& item->notificationReady();
 

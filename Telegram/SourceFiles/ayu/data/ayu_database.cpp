@@ -10,6 +10,9 @@
 #include "ayu/libs/sqlite/sqlite_orm.h"
 #include "base/unixtime.h"
 
+#include <algorithm>
+#include <mutex>
+
 using namespace sqlite_orm;
 auto storage = make_storage(
 	"./tdata/ayudata.db",
@@ -212,7 +215,13 @@ void runMigrations(decltype(storage) &storage) {
 
 namespace AyuDatabase {
 
+std::recursive_mutex &Mutex() {
+	static auto result = std::recursive_mutex();
+	return result;
+}
+
 void moveCurrentDatabase() {
+	const auto lock = std::scoped_lock(Mutex());
 	const auto time = base::unixtime::now();
 
 	if (QFile::exists("./tdata/ayudata.db")) {
@@ -229,30 +238,42 @@ void moveCurrentDatabase() {
 }
 
 void initialize() {
-	try {
-		storage.pragma.journal_mode(sqlite_orm::journal_mode::WAL);
-		storage.pragma.synchronous(1);
-	} catch (const std::exception &ex) {
-		LOG(("Database pragma setup failed: %1").arg(ex.what()));
-	}
+	const auto lock = std::scoped_lock(Mutex());
+	auto ready = false;
 	try {
 		storage.sync_schema(true);
 
 		runMigrations(storage);
 
 		storage.sync_schema(true);
+		ready = true;
 	} catch (const std::exception &ex) {
 		LOG(("Database initialization failed: %1").arg(ex.what()));
-		moveCurrentDatabase();
+	}
+	if (!ready) {
+		try {
+			moveCurrentDatabase();
 
-		storage.sync_schema(true);
-		if (!storage.get_pointer<SchemaVersion>(1)) {
-			storage.insert(SchemaVersion{1, 0});
+			storage.sync_schema(true);
+			if (!storage.get_pointer<SchemaVersion>(1)) {
+				storage.insert(SchemaVersion{1, 0});
+			}
+		} catch (const std::exception &ex) {
+			LOG(("Database recovery failed: %1").arg(ex.what()));
 		}
+	}
+	try {
+		storage.open_forever();
+		storage.pragma.busy_timeout(5000);
+		storage.pragma.journal_mode(sqlite_orm::journal_mode::WAL);
+		storage.pragma.synchronous(1);
+	} catch (const std::exception &ex) {
+		LOG(("Database pragma setup failed: %1").arg(ex.what()));
 	}
 }
 
 void addEditedMessage(const EditedMessage &message) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.begin_transaction();
 		storage.insert(message);
@@ -266,7 +287,7 @@ void addEditedMessage(const EditedMessage &message) {
 	}
 }
 
-std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageId, ID minId, ID maxId, int totalLimit) {
+std::vector<EditedMessage> getEditedMessagesUnsafe(ID userId, ID dialogId, ID messageId, ID minId, ID maxId, int totalLimit) {
 	return storage.get_all<EditedMessage>(
 		where(
 			column<EditedMessage>(&EditedMessage::userId) == userId and
@@ -281,6 +302,7 @@ std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageI
 }
 
 bool hasRevisions(ID userId, ID dialogId, ID messageId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return !storage.select(
 			columns(column<EditedMessage>(&EditedMessage::messageId)),
@@ -298,6 +320,18 @@ bool hasRevisions(ID userId, ID dialogId, ID messageId) {
 }
 
 void addDeletedMessage(const DeletedMessage &message) {
+	const auto lock = std::scoped_lock(Mutex());
+	try {
+		const auto exists = storage.count<DeletedMessage>(
+			where(
+				column<DeletedMessage>(&DeletedMessage::userId) == message.userId and
+				column<DeletedMessage>(&DeletedMessage::dialogId) == message.dialogId and
+				column<DeletedMessage>(&DeletedMessage::messageId) == message.messageId));
+		if (exists > 0) {
+			return;
+		}
+	} catch (std::exception &) {
+	}
 	try {
 		storage.begin_transaction();
 		storage.insert(message);
@@ -307,22 +341,46 @@ void addDeletedMessage(const DeletedMessage &message) {
 			storage.rollback();
 		} catch (...) {
 		}
-		LOG(("Failed to save edited message for some reason: %1").arg(ex.what()));
+		LOG(("Failed to save deleted message: %1").arg(ex.what()));
 	}
 }
 
-std::vector<DeletedMessage> getDeletedMessages(ID userId, ID dialogId, ID topicId, ID minId, ID maxId, int totalLimit, const std::string &searchQuery) {
-	if (searchQuery.empty()) {
+std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageId, ID minId, ID maxId, int totalLimit) {
+	const auto lock = std::scoped_lock(Mutex());
+	try {
+		return getEditedMessagesUnsafe(userId, dialogId, messageId, minId, maxId, totalLimit);
+	} catch (std::exception &ex) {
+		LOG(("Failed to get edited messages: %1").arg(ex.what()));
+		return {};
+	}
+}
+
+std::vector<DeletedMessage> getDeletedMessagesUnsafe(ID userId, ID dialogId, ID topicId, ID minId, ID maxId, int totalLimit, const std::string &searchQuery, bool mediaOnly) {
+	const auto ascending = (minId != 0 && maxId == 0);
+	const auto fetch = [&](auto condition) {
+		if (ascending) {
+			auto result = storage.get_all<DeletedMessage>(
+				where(condition),
+				order_by(column<DeletedMessage>(&DeletedMessage::messageId)).asc(),
+				limit(totalLimit)
+			);
+			std::reverse(result.begin(), result.end());
+			return result;
+		}
 		return storage.get_all<DeletedMessage>(
-			where(
-				column<DeletedMessage>(&DeletedMessage::userId) == userId and
-				column<DeletedMessage>(&DeletedMessage::dialogId) == dialogId and
-				(column<DeletedMessage>(&DeletedMessage::topicId) == topicId or topicId == 0) and
-				(column<DeletedMessage>(&DeletedMessage::messageId) > minId or minId == 0) and
-				(column<DeletedMessage>(&DeletedMessage::messageId) < maxId or maxId == 0)
-			),
+			where(condition),
 			order_by(column<DeletedMessage>(&DeletedMessage::messageId)).desc(),
 			limit(totalLimit)
+		);
+	};
+	if (searchQuery.empty()) {
+		return fetch(
+			column<DeletedMessage>(&DeletedMessage::userId) == userId and
+			column<DeletedMessage>(&DeletedMessage::dialogId) == dialogId and
+			(column<DeletedMessage>(&DeletedMessage::topicId) == topicId or topicId == 0) and
+			(column<DeletedMessage>(&DeletedMessage::messageId) > minId or minId == 0) and
+			(column<DeletedMessage>(&DeletedMessage::messageId) < maxId or maxId == 0) and
+			(column<DeletedMessage>(&DeletedMessage::documentType) != 0 or !mediaOnly)
 		);
 	}
 
@@ -335,21 +393,48 @@ std::vector<DeletedMessage> getDeletedMessages(ID userId, ID dialogId, ID topicI
 		escaped += c;
 	}
 	const auto pattern = "%" + escaped + "%";
-	return storage.get_all<DeletedMessage>(
-		where(
-			column<DeletedMessage>(&DeletedMessage::userId) == userId and
-			column<DeletedMessage>(&DeletedMessage::dialogId) == dialogId and
-			(column<DeletedMessage>(&DeletedMessage::topicId) == topicId or topicId == 0) and
-			(column<DeletedMessage>(&DeletedMessage::messageId) > minId or minId == 0) and
-			(column<DeletedMessage>(&DeletedMessage::messageId) < maxId or maxId == 0) and
-			like(column<DeletedMessage>(&DeletedMessage::text), pattern, "\\")
-		),
-		order_by(column<DeletedMessage>(&DeletedMessage::messageId)).desc(),
-		limit(totalLimit)
+	return fetch(
+		column<DeletedMessage>(&DeletedMessage::userId) == userId and
+		column<DeletedMessage>(&DeletedMessage::dialogId) == dialogId and
+		(column<DeletedMessage>(&DeletedMessage::topicId) == topicId or topicId == 0) and
+		(column<DeletedMessage>(&DeletedMessage::messageId) > minId or minId == 0) and
+		(column<DeletedMessage>(&DeletedMessage::messageId) < maxId or maxId == 0) and
+		(column<DeletedMessage>(&DeletedMessage::documentType) != 0 or !mediaOnly) and
+		like(column<DeletedMessage>(&DeletedMessage::text), pattern, "\\")
 	);
 }
 
+
+std::vector<DeletedMessage> getDeletedMessages(ID userId, ID dialogId, ID topicId, ID minId, ID maxId, int totalLimit, const std::string &searchQuery, bool mediaOnly) {
+	const auto lock = std::scoped_lock(Mutex());
+	try {
+		return getDeletedMessagesUnsafe(userId, dialogId, topicId, minId, maxId, totalLimit, searchQuery, mediaOnly);
+	} catch (std::exception &ex) {
+		LOG(("Failed to get deleted messages: %1").arg(ex.what()));
+		return {};
+	}
+}
+
+void updateDeletedMessageMedia(ID userId, ID dialogId, ID messageId, const std::string &mediaPath, const std::string &hqThumbPath) {
+	const auto lock = std::scoped_lock(Mutex());
+	try {
+		auto rows = storage.get_all<DeletedMessage>(
+			where(
+				column<DeletedMessage>(&DeletedMessage::userId) == userId and
+				column<DeletedMessage>(&DeletedMessage::dialogId) == dialogId and
+				column<DeletedMessage>(&DeletedMessage::messageId) == messageId));
+		for (auto &row : rows) {
+			row.mediaPath = mediaPath;
+			row.hqThumbPath = hqThumbPath;
+			storage.update(row);
+		}
+	} catch (std::exception &ex) {
+		LOG(("Failed to update deleted message media: %1").arg(ex.what()));
+	}
+}
+
 bool hasDeletedMessages(ID userId, ID dialogId, ID topicId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return !storage.select(
 			columns(column<DeletedMessage>(&DeletedMessage::dialogId)),
@@ -367,6 +452,7 @@ bool hasDeletedMessages(ID userId, ID dialogId, ID topicId) {
 }
 
 void removeDeletedMessage(ID userId, ID dialogId, ID messageId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.remove_all<DeletedMessage>(
 			where(
@@ -381,6 +467,7 @@ void removeDeletedMessage(ID userId, ID dialogId, ID messageId) {
 }
 
 void clearDeletedMessages(ID userId, ID dialogId, ID topicId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.remove_all<DeletedMessage>(
 			where(
@@ -394,6 +481,7 @@ void clearDeletedMessages(ID userId, ID dialogId, ID topicId) {
 }
 
 std::vector<DeletedMessage> getDeletedMessagesByDate(ID userId, ID dialogId, ID topicId, int dateFrom, int dateTill, int totalLimit) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.get_all<DeletedMessage>(
 			where(
@@ -413,6 +501,7 @@ std::vector<DeletedMessage> getDeletedMessagesByDate(ID userId, ID dialogId, ID 
 }
 
 std::vector<ID> getDialogsWithDeletedMessages(ID userId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.select(
 			distinct(column<DeletedMessage>(&DeletedMessage::dialogId)),
@@ -425,6 +514,7 @@ std::vector<ID> getDialogsWithDeletedMessages(ID userId) {
 }
 
 int countDeletedMessages(ID userId, ID dialogId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.count<DeletedMessage>(
 			where(
@@ -439,6 +529,7 @@ int countDeletedMessages(ID userId, ID dialogId) {
 
 template<typename T>
 std::vector<T> getAllT() {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.get_all<T>();
 	} catch (std::exception &ex) {
@@ -448,14 +539,17 @@ std::vector<T> getAllT() {
 }
 
 std::vector<RegexFilter> getAllRegexFilters() {
+	const auto lock = std::scoped_lock(Mutex());
 	return getAllT<RegexFilter>();
 }
 
 std::vector<RegexFilterGlobalExclusion> getAllFiltersExclusions() {
+	const auto lock = std::scoped_lock(Mutex());
 	return getAllT<RegexFilterGlobalExclusion>();
 }
 
 std::vector<RegexFilter> getExcludedByDialogId(ID dialogId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.get_all<RegexFilter>(
 			where(in(&RegexFilter::id,
@@ -471,6 +565,7 @@ std::vector<RegexFilter> getExcludedByDialogId(ID dialogId) {
 }
 
 int getCount() {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.count<RegexFilter>();
 	} catch (std::exception &ex) {
@@ -480,6 +575,7 @@ int getCount() {
 }
 
 RegexFilter getById(std::vector<char> id) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.get<RegexFilter>(
 			where(column<RegexFilter>(&RegexFilter::id) == std::move(id))
@@ -491,6 +587,7 @@ RegexFilter getById(std::vector<char> id) {
 }
 
 std::vector<RegexFilter> getShared() {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.get_all<RegexFilter>(
 			where(is_null(column<RegexFilter>(&RegexFilter::dialogId)))
@@ -502,6 +599,7 @@ std::vector<RegexFilter> getShared() {
 }
 
 std::vector<RegexFilter> getByDialogId(ID dialogId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return storage.get_all<RegexFilter>(
 			where(column<RegexFilter>(&RegexFilter::dialogId) == dialogId)
@@ -513,6 +611,7 @@ std::vector<RegexFilter> getByDialogId(ID dialogId) {
 }
 
 void addRegexFilter(const RegexFilter &filter) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.begin_transaction();
 		storage.replace(filter); // we're using replace as we set std::vector<char> as primary key
@@ -527,6 +626,7 @@ void addRegexFilter(const RegexFilter &filter) {
 }
 
 void addRegexExclusion(const RegexFilterGlobalExclusion &exclusion) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.begin_transaction();
 		storage.insert(exclusion);
@@ -541,6 +641,7 @@ void addRegexExclusion(const RegexFilterGlobalExclusion &exclusion) {
 }
 
 void updateRegexFilter(const RegexFilter &filter) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.update_all(
 			set(
@@ -558,6 +659,7 @@ void updateRegexFilter(const RegexFilter &filter) {
 }
 
 void deleteFilter(const std::vector<char> &id) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.remove_all<RegexFilter>(
 			where(column<RegexFilter>(&RegexFilter::id) == id)
@@ -568,6 +670,7 @@ void deleteFilter(const std::vector<char> &id) {
 }
 
 void deleteExclusionsByFilterId(const std::vector<char> &id) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.remove_all<RegexFilterGlobalExclusion>(
 			where(column<RegexFilterGlobalExclusion>(&RegexFilterGlobalExclusion::filterId) == id)
@@ -578,6 +681,7 @@ void deleteExclusionsByFilterId(const std::vector<char> &id) {
 }
 
 void deleteExclusion(ID dialogId, std::vector<char> filterId) {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.remove_all<RegexFilterGlobalExclusion>(
 			where(column<RegexFilterGlobalExclusion>(&RegexFilterGlobalExclusion::filterId) == filterId and
@@ -590,6 +694,7 @@ void deleteExclusion(ID dialogId, std::vector<char> filterId) {
 }
 
 void deleteAllFilters() {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.remove_all<RegexFilter>();
 	} catch (std::exception &ex) {
@@ -598,6 +703,7 @@ void deleteAllFilters() {
 }
 
 void deleteAllExclusions() {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		storage.remove_all<RegexFilterGlobalExclusion>();
 	} catch (std::exception &ex) {
@@ -606,6 +712,7 @@ void deleteAllExclusions() {
 }
 
 bool hasFilters() {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return !storage.select(
 			columns(column<RegexFilter>(&RegexFilter::id)),
@@ -618,6 +725,7 @@ bool hasFilters() {
 }
 
 bool hasPerDialogFilters() {
+	const auto lock = std::scoped_lock(Mutex());
 	try {
 		return
 			!storage.select(

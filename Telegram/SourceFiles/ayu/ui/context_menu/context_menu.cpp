@@ -386,9 +386,7 @@ void AddAyuGramActions(PeerData *peerData,
 	const auto showFilters = settings.filtersEnabled()
 		&& (!user || user->isBot());
 	const auto saveDeletedMessages = settings.saveDeletedMessages();
-	if (!showFilters && !saveDeletedMessages) {
-		return;
-	}
+	const auto selfChat = user && user->isSelf();
 
 	const auto topic = peerData->isForum() && thread ? thread->asTopic() : nullptr;
 	const auto topicId = topic ? topic->rootId().bare : 0;
@@ -459,6 +457,40 @@ void AddAyuGramActions(PeerData *peerData,
 					.icon = &st::menuIconClearAttention,
 					.isAttention = true,
 				});
+			}
+			if (!selfChat) {
+				if (showFilters
+					|| saveDeletedMessages
+					|| filteredToggleShown.has_value()) {
+					addAction({ .isSeparator = true });
+				}
+				const auto dialogId = getDialogIdFromPeer(peerData);
+				const auto ghostExcluded = AyuSettings::getInstance().isGhostExcluded(dialogId);
+				addAction(
+					ghostExcluded
+						? tr::ayu_ContextGhostInclude(tr::now)
+						: tr::ayu_ContextGhostExclude(tr::now),
+					[=] {
+						if (ghostExcluded) {
+							AyuSettings::getInstance().removeGhostExcludedDialog(dialogId);
+						} else {
+							AyuSettings::getInstance().addGhostExcludedDialog(dialogId);
+						}
+					},
+					ghostExcluded ? &st::menuIconStealth : &st::menuIconShowInChat);
+				const auto firstOnly = AyuSettings::getInstance().isFirstMessageOnly(dialogId);
+				addAction(
+					firstOnly
+						? tr::ayu_ContextNotifyAll(tr::now)
+						: tr::ayu_ContextNotifyFirstOnly(tr::now),
+					[=] {
+						if (firstOnly) {
+							AyuSettings::getInstance().removeFirstMessageOnlyDialog(dialogId);
+						} else {
+							AyuSettings::getInstance().addFirstMessageOnlyDialog(dialogId);
+						}
+					},
+					firstOnly ? &st::menuIconUnmute : &st::menuIconMute);
 			}
 		},
 	});

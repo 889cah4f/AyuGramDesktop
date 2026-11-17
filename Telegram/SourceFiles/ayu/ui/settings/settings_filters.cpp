@@ -101,6 +101,23 @@ void BuildFiltersSettings(SectionBuilder &builder) {
 		}, blockedButton->lifetime());
 	}
 
+	const auto joinButton = builder.addButton({
+		.id = u"ayu/hideJoinMessages"_q,
+		.title = tr::ayu_FiltersHideJoinMessages(),
+		.st = &st::settingsButtonNoIcon,
+		.toggled = rpl::single(settings->hideJoinMessages()),
+	});
+	if (joinButton) {
+		joinButton->toggledValue(
+		) | rpl::filter([=](bool enabled) {
+			return (enabled != settings->hideJoinMessages());
+		}) | on_next([=](bool enabled) {
+			AyuSettings::getInstance().setHideJoinMessages(enabled);
+			FiltersCacheController::rebuildCache();
+			FiltersCacheController::fireUpdate();
+		}, joinButton->lifetime());
+	}
+
 	builder.addSkip();
 }
 

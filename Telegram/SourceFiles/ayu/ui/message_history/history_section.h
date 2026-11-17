@@ -10,6 +10,11 @@
 #include "window/section_memento.h"
 #include "ayu/ui/message_history/history_item.h"
 #include "mtproto/sender.h"
+#include "ui/effects/animations.h"
+
+namespace Ui {
+class JumpDownButton;
+} // namespace Ui
 // don't reformat includes above
 
 namespace Ui {
@@ -69,6 +74,12 @@ protected:
 
 private:
 	void onScroll();
+	void setupScrollDownButton();
+	void scrollDownClicked();
+	void scrollToAnimationCallback();
+	void updateScrollDownVisibility();
+	void startScrollDownButtonAnimation(bool shown);
+	void updateScrollDownPosition();
 	void updateAdaptiveLayout();
 	void saveState(not_null<SectionMemento*> memento);
 	void restoreState(not_null<SectionMemento*> memento);
@@ -80,6 +91,10 @@ private:
 	object_ptr<Ui::PlainShadow> _fixedBarShadow;
 	HistoryItem *_item;
 	ID _topicId;
+	object_ptr<Ui::JumpDownButton> _scrollDown;
+	Ui::Animations::Simple _scrollDownShown;
+	Ui::Animations::Simple _scrollToAnimation;
+	bool _scrollDownIsShown = false;
 
 };
 

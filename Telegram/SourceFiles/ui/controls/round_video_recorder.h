@@ -65,6 +65,7 @@ public:
 	[[nodiscard]] int previewSize() const;
 	[[nodiscard]] Fn<void(Media::Capture::Chunk)> audioChunkProcessor();
 	[[nodiscard]] rpl::producer<QImage> placeholderUpdates() const;
+	[[nodiscard]] rpl::producer<> previewClicks() const;
 
 	void pause(Fn<void(RoundVideoResult)> done = nullptr);
 	void resume(RoundVideoPartial partial);
@@ -105,6 +106,7 @@ private:
 	Ui::Animations::Simple _fadeAnimation;
 	Ui::Animations::Simple _fadeContentAnimation;
 	rpl::event_stream<QImage> _placeholderUpdates;
+	rpl::event_stream<> _previewClicks;
 
 	std::shared_ptr<Ui::DynamicImage> _silentPreview;
 	std::shared_ptr<Ui::DynamicImage> _soundedPreview;

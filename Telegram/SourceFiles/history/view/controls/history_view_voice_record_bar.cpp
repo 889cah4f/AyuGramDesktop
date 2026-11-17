@@ -668,7 +668,7 @@ QPoint TTLButton::prepareRippleStartPosition() const {
 
 } // namespace
 
-class ListenWrap final {
+class ListenWrap final : public base::has_weak_ptr {
 public:
 	ListenWrap(
 		not_null<Ui::RpWidget*> parent,
@@ -682,10 +682,12 @@ public:
 	void requestPaintProgress(float64 progress);
 	void prepareForSendAnimation();
 	[[nodiscard]] rpl::producer<> stopRequests() const;
-	void applyTrimBeforeSend();
+	bool applyTrimBeforeSend(Fn<void()> done);
+	[[nodiscard]] bool trimming() const;
 
 	void playPause();
 	[[nodiscard]] std::shared_ptr<Ui::DynamicImage> videoPreview();
+	[[nodiscard]] rpl::producer<> trimApplied() const;
 
 	[[nodiscard]] rpl::lifetime &lifetime();
 
@@ -709,7 +711,13 @@ private:
 	void init();
 	void initPlayButton();
 	void initPlayProgress();
-	void applyTrimSelection(bool resetSelection);
+	bool applyTrimSelection(bool resetSelection, Fn<void()> done);
+	void finishTrim(
+		::Media::AudioEditResult trimmed,
+		VoiceWaveform waveform,
+		bool resetSelection);
+	bool _trimming = false;
+	rpl::event_stream<> _trimApplied;
 	void updateControlGeometry();
 	void updateTrimGeometry();
 	[[nodiscard]] TrimGeometry computeTrimGeometry(
@@ -1579,13 +1587,20 @@ void ListenWrap::updateTrimGeometry() {
 	_trimRightHandleRect = geometry.rightHandle;
 }
 
-void ListenWrap::applyTrimSelection(bool resetSelection) {
+bool ListenWrap::trimming() const {
+	return _trimming;
+}
+
+bool ListenWrap::applyTrimSelection(bool resetSelection, Fn<void()> done) {
+	if (_trimming) {
+		return true;
+	}
 	if (!canTrim()) {
-		return;
+		return false;
 	}
 	const auto range = selectedTrimRange();
 	if (!range) {
-		return;
+		return false;
 	}
 	const auto [waveLeft, waveRight] = selectedTrimBoundaries();
 	auto waveform = ResampleWaveformToRange(
@@ -1598,28 +1613,59 @@ void ListenWrap::applyTrimSelection(bool resetSelection) {
 	const auto selectedSamples = int((selected
 		* ::Media::Player::kDefaultFrequency) / crl::time(1000));
 	if (selectedSamples < kMinSamples) {
-		return;
+		return false;
 	}
 	const auto isRoundVideo = (_data->minithumbsCount > 0)
 		|| _data->content.mid(4, 4) == "ftyp";
-	auto trimmed = ::Media::AudioEditResult();
 	if (isRoundVideo) {
-		auto source = ::Media::Encode::VideoSource();
-		source.bytes = _data->content;
-		source.from = from;
-		source.till = till;
-		auto result = ::Media::Encode::Run({ .source = std::move(source) });
-		if (result.empty()) {
-			return;
+		_trimming = true;
+		if (isInPlayer()) {
+			::Media::Player::instance()->stop(AudioMsgId::Type::Voice, true);
 		}
-		trimmed.content = std::move(result.bytes);
-		trimmed.duration = result.duration ? result.duration : (till - from);
-	} else {
-		trimmed = ::Media::TrimAudioToRange(_data->content, from, till);
+		const auto weak = base::make_weak(this);
+		const auto bytes = _data->content;
+		crl::async([=, waveform = std::move(waveform)]() mutable {
+			auto source = ::Media::Encode::VideoSource();
+			source.bytes = bytes;
+			source.from = from;
+			source.till = till;
+			auto result = ::Media::Encode::Run({ .source = std::move(source) });
+			auto trimmed = ::Media::AudioEditResult();
+			if (!result.empty()) {
+				trimmed.content = std::move(result.bytes);
+				trimmed.duration = result.duration
+					? result.duration
+					: (till - from);
+			}
+			crl::on_main(weak, [=,
+					trimmed = std::move(trimmed),
+					waveform = std::move(waveform)]() mutable {
+				_trimming = false;
+				if (!trimmed.content.isEmpty()) {
+					finishTrim(
+						std::move(trimmed),
+						std::move(waveform),
+						resetSelection);
+				}
+				if (done) {
+					done();
+				}
+			});
+		});
+		return true;
 	}
+	auto trimmed = ::Media::TrimAudioToRange(_data->content, from, till);
 	if (trimmed.content.isEmpty()) {
-		return;
+		return false;
 	}
+	finishTrim(std::move(trimmed), std::move(waveform), resetSelection);
+	return false;
+}
+
+void ListenWrap::finishTrim(
+		::Media::AudioEditResult trimmed,
+		VoiceWaveform waveform,
+		bool resetSelection) {
 	if (isInPlayer()) {
 		::Media::Player::instance()->stop(AudioMsgId::Type::Voice, true);
 	}
@@ -1645,6 +1691,11 @@ void ListenWrap::applyTrimSelection(bool resetSelection) {
 	updateControlGeometry();
 	_playProgress = anim::value();
 	_parent->update();
+	_trimApplied.fire({});
+}
+
+rpl::producer<> ListenWrap::trimApplied() const {
+	return _trimApplied.events();
 }
 
 void ListenWrap::updateDurationText() {
@@ -1652,8 +1703,8 @@ void ListenWrap::updateDurationText() {
 	_durationWidth = _durationFont->width(_duration);
 }
 
-void ListenWrap::applyTrimBeforeSend() {
-	applyTrimSelection(true);
+bool ListenWrap::applyTrimBeforeSend(Fn<void()> done) {
+	return applyTrimSelection(true, std::move(done));
 }
 
 void ListenWrap::prepareForSendAnimation() {
@@ -2374,18 +2425,26 @@ void VoiceRecordBar::init() {
 
 	_lock->setClickedCallback([=] {
 		if (isListenState()) {
-			applyListenTrimForResume();
-			startRecording();
-			_showListenAnimation.stop();
-			_showListenAnimation.start([=](float64 value) {
-				_listen->requestPaintProgress(1.);
-				paintShowListenCallback(value);
-				if (!value) {
-					_listen = nullptr;
+			if (_listen->trimming()) {
+				return;
+			}
+			applyListenTrimForResume(crl::guard(this, [=] {
+				if (!_listen || !isListenState()) {
+					return;
 				}
-			}, 1., 0., st::universalDuration * 2);
-			setLevelAsSend();
-
+				startRecording();
+				_showListenAnimation.stop();
+				_showListenAnimation.start([=](float64 value) {
+					if (_listen) {
+						_listen->requestPaintProgress(1.);
+					}
+					paintShowListenCallback(value);
+					if (!value) {
+						_listen = nullptr;
+					}
+				}, 1., 0., st::universalDuration * 2);
+				setLevelAsSend();
+			}));
 			return;
 		}
 		if (!_lock->isStopState()) {
@@ -2499,12 +2558,19 @@ void VoiceRecordBar::prepareOnSendPress() {
 	_lock->setRecordingVideo(_recordingVideo);
 }
 
-void VoiceRecordBar::applyListenTrimForResume() {
+void VoiceRecordBar::applyListenTrimForResume(Fn<void()> done) {
 	const auto beforeDuration = _data.duration;
 	const auto beforeSize = _data.content.size();
-	_listen->applyTrimBeforeSend();
-	_resumeFromTrimmedListen = (_data.duration != beforeDuration)
-		|| (_data.content.size() != beforeSize);
+	const auto check = [=] {
+		_resumeFromTrimmedListen = (_data.duration != beforeDuration)
+			|| (_data.content.size() != beforeSize);
+		if (done) {
+			done();
+		}
+	};
+	if (!_listen->applyTrimBeforeSend(crl::guard(this, check))) {
+		check();
+	}
 }
 
 void VoiceRecordBar::activeAnimate(bool active) {
@@ -2984,6 +3050,16 @@ void VoiceRecordBar::stopRecording(StopType type, bool ttlBeforeHide) {
 							_data.content,
 							recorder->previewSize()),
 						_listen->videoPreview());
+					_listen->trimApplied(
+					) | rpl::on_next([=] {
+						if (_listen && _videoRecorder) {
+							_videoRecorder->showPreview(
+								std::make_shared<SilentPreview>(
+									_data.content,
+									_videoRecorder->previewSize()),
+								_listen->videoPreview());
+						}
+					}, _listen->lifetime());
 				});
 			});
 			instance()->pause(true);
@@ -3168,9 +3244,26 @@ void VoiceRecordBar::requestToSendWithOptions(Api::SendOptions options) {
 			options.ttlSeconds = std::numeric_limits<int>::max();
 		}
 		if (_listen) {
+			if (_listen->trimming()) {
+				return;
+			}
 			_listen->prepareForSendAnimation();
-			_listen->applyTrimBeforeSend();
+			const auto async = _listen->applyTrimBeforeSend(
+				crl::guard(this, [=] {
+					if (_listen && !_listen->trimming()) {
+						sendListenData(options);
+					}
+				}));
+			if (async) {
+				return;
+			}
 		}
+		sendListenData(options);
+	}
+}
+
+void VoiceRecordBar::sendListenData(Api::SendOptions options) {
+	{
 
 		const auto video = !_data.minithumbs.isNull();
 		const auto &settings = AyuSettings::getInstance();
@@ -3473,6 +3566,12 @@ bool VoiceRecordBar::createVideoRecorder() {
 	_videoRecorder->placeholderUpdates(
 	) | rpl::on_next([=](QImage &&placeholder) {
 		_show->session().local().writeRoundPlaceholder(placeholder);
+	}, _videoCapturerLifetime);
+	_videoRecorder->previewClicks(
+	) | rpl::on_next([=] {
+		if (_listen) {
+			_listen->playPause();
+		}
 	}, _videoCapturerLifetime);
 
 	return true;

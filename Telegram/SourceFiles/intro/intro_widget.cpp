@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "intro/intro_widget.h"
 
+#include "ayu/ayu_build.h"
 #include "ayu/ayu_settings.h"
 
 #include "intro/intro_phone.h"
@@ -181,7 +182,12 @@ Widget::Widget(
 		}, lifetime());
 	}
 
-	_footer->setText(QString("%1 v%2").arg(AyuSettings::getInstance().effectiveAppNameFull(), currentVersionText()));
+	auto footer = TextWithEntities{ QString("%1 v%2").arg(
+		AyuSettings::getInstance().effectiveAppNameFull(),
+		currentVersionText()) };
+	footer.append(AyuBuild::ByAuthor());
+	_footer->setMarkedText(footer);
+	_footer->setLinksTrusted();
 }
 
 rpl::producer<> Widget::showSettingsRequested() const {

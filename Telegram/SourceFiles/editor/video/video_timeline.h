@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/timer.h"
 #include "base/weak_ptr.h"
 #include "ui/effects/animations.h"
 #include "ui/rp_widget.h"
@@ -89,6 +90,17 @@ private:
 	void moveWindowTo(crl::time center);
 	[[nodiscard]] crl::time timeAt(int x) const;
 	[[nodiscard]] int xAt(crl::time time) const;
+	[[nodiscard]] std::pair<crl::time, crl::time> currentView() const;
+	[[nodiscard]] int xAtView(
+		std::pair<crl::time, crl::time> view,
+		crl::time time) const;
+	[[nodiscard]] crl::time grabbedTime() const;
+	[[nodiscard]] bool zoomed() const;
+	void animateViewTo(crl::time from, crl::time till);
+	void restartHold(QPoint position);
+	void zoomIn();
+	void zoomOut();
+	void panStep();
 	[[nodiscard]] Grab grabAt(QPoint position) const;
 
 	void applyGrab(QPoint position);
@@ -121,6 +133,17 @@ private:
 
 	Grab _grab = Grab::None;
 	int _grabShift = 0;
+
+	crl::time _viewFrom = 0;
+	crl::time _viewTill = 0;
+	crl::time _viewFromStart = 0;
+	crl::time _viewTillStart = 0;
+	Ui::Animations::Simple _viewAnimation;
+	base::Timer _holdTimer;
+	base::Timer _panTimer;
+	QPoint _holdAnchor;
+	QPoint _lastPosition;
+	int _zoomStage = 0;
 	Ui::Animations::Simple _dotActive;
 
 	rpl::event_stream<crl::time> _trimChanges;

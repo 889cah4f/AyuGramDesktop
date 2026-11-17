@@ -62,14 +62,14 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Radolyn Labs"
 #ifdef AYU_COMMUNITY_BUILD
-            VALUE "FileDescription", "AyuGram Desktop - @wastelxnd build"
+            VALUE "FileDescription", "AyuGram Desktop - by wastelxnd"
 #else
             VALUE "FileDescription", "AyuGram Desktop"
 #endif
             VALUE "FileVersion", "7.2.9.0"
             VALUE "LegalCopyright", "Copyright (C) 2014-2026"
 #ifdef AYU_COMMUNITY_BUILD
-            VALUE "ProductName", "AyuGram Desktop - @wastelxnd build"
+            VALUE "ProductName", "AyuGram Desktop - by wastelxnd"
 #else
             VALUE "ProductName", "AyuGram Desktop"
 #endif

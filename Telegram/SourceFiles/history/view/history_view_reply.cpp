@@ -41,6 +41,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/message_shot/message_shot.h"
 
 
 namespace HistoryView {
@@ -1025,6 +1026,15 @@ void Reply::paint(
 					namew,
 					w + 2 * x,
 					_nameTwoLines ? 2 : 1);
+				if (AyuFeatures::MessageShot::ShouldBlurNames()) {
+					AyuFeatures::MessageShot::BlurPaintedRegion(
+						p,
+						QRect(
+							x + st::historyReplyPadding.left() + previewSkip,
+							y + st::historyReplyPadding.top(),
+							std::min(namew, _name.maxWidth()),
+							st::semiboldFont->height * (_nameTwoLines ? 2 : 1)));
+				}
 
 				p.setPen(inBubble
 					? stm->historyTextFg

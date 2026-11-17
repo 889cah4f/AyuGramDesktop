@@ -64,22 +64,42 @@ void AboutBox(not_null<Ui::GenericBox*> box, Window::SessionController* controll
 
 	auto layout = box->verticalLayout();
 
-	const auto version = layout->add(
-		object_ptr<Ui::LinkButton>(
-			box,
-			tr::lng_about_version(
-				tr::now,
-				lt_version,
-				currentVersionText()),
-			st::aboutVersionLink),
-		QMargins(
-			st::boxRowPadding.left(),
-			-st::lineWidth * 3,
-			st::boxRowPadding.right(),
-			st::boxRowPadding.bottom()));
-	version->setClickedCallback([=] {
-		File::OpenUrl(Core::App().changelogLink());
-	});
+	if (AyuBuild::IsCommunity()) {
+		const auto version = layout->add(
+			object_ptr<Ui::FlatLabel>(
+				box,
+				rpl::single(Ui::Text::Link(
+					tr::lng_about_version(
+						tr::now,
+						lt_version,
+						currentVersionText()),
+					Core::App().changelogLink()
+				).append(AyuBuild::ByAuthor())),
+				st::aboutLabel),
+			QMargins(
+				st::boxRowPadding.left(),
+				-st::lineWidth * 3,
+				st::boxRowPadding.right(),
+				st::boxRowPadding.bottom()));
+		version->setLinksTrusted();
+	} else {
+		const auto version = layout->add(
+			object_ptr<Ui::LinkButton>(
+				box,
+				tr::lng_about_version(
+					tr::now,
+					lt_version,
+					currentVersionText()),
+				st::aboutVersionLink),
+			QMargins(
+				st::boxRowPadding.left(),
+				-st::lineWidth * 3,
+				st::boxRowPadding.right(),
+				st::boxRowPadding.bottom()));
+		version->setClickedCallback([=] {
+			File::OpenUrl(Core::App().changelogLink());
+		});
+	}
 
 	Ui::AddSkip(layout, st::aboutTopSkip);
 
@@ -92,14 +112,6 @@ void AboutBox(not_null<Ui::GenericBox*> box, Window::SessionController* controll
 	};
 
 	addText(Text());
-	if (AyuBuild::IsCommunity()) {
-		addText(tr::ayu_CommunityBuildBy(
-			lt_author,
-			rpl::single(Ui::Text::Link(
-				AyuBuild::Author(),
-				AyuBuild::AuthorLink())),
-			Ui::Text::WithEntities));
-	}
 
 	box->addButton(tr::lng_close(), [=] { box->closeBox(); });
 	box->addLeftButton(
@@ -148,7 +160,6 @@ namespace {
 	} else if (Platform::IsWindowsARM64()) {
 		result += " arm64";
 	}
-	result += AyuBuild::VersionSuffix();
 #ifdef _DEBUG
 	result += " DEBUG";
 #endif

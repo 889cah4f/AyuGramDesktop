@@ -6,6 +6,7 @@
 // Copyright @Radolyn, 2026
 #pragma once
 
+#include "ayu/data/messages_storage.h"
 #include "ayu/ui/message_history/history_item.h"
 #include "ayu/ui/message_history/history_section.h"
 #include "base/timer.h"
@@ -79,7 +80,14 @@ public:
 	void restoreState(not_null<SectionMemento*> memento);
 
 	void applySearch(const QString &query);
+	void applyFilter(AyuMessages::DeletedFilter filter);
 	void jumpToDate(const QDate &date);
+	void jumpToLatest();
+	[[nodiscard]] bool downLoaded() const;
+	void resetItems();
+	void clearGlobalPointers();
+	void showOriginal(not_null<const HistoryItem*> item);
+	[[nodiscard]] rpl::producer<QDate> calendarRequests() const;
 
 	// Ui::AbstractTooltipShower interface.
 	QString tooltipText() const override;
@@ -305,11 +313,13 @@ private:
 	// Don't load anything until the memento was read.
 	bool _upLoaded = true;
 	bool _downLoaded = true;
+	bool _jumpPending = false;
 	bool _loadingUp = false;
 	bool _loadingDown = false;
 	int _loadRequestNum = 0;
 	Ui::Text::String _emptyText;
 	QString _searchQuery;
+	AyuMessages::DeletedFilter _filter = AyuMessages::DeletedFilter::All;
 
 	MouseAction _mouseAction = MouseAction::None;
 	TextSelectType _mouseSelectType = TextSelectType::Letters;
@@ -328,6 +338,10 @@ private:
 	base::unique_qptr<Ui::PopupMenu> _menu;
 
 	QPoint _trippleClickPoint;
+	base::flat_map<not_null<const HistoryItem*>, MsgId> _realIds;
+	ClickHandlerPtr _dateLink;
+	QDate _dateLinkDate;
+	rpl::event_stream<QDate> _calendarRequests;
 	base::Timer _trippleClickTimer;
 
 	rpl::event_stream<int> _scrollToSignal;

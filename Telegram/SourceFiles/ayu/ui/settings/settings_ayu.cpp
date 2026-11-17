@@ -677,6 +677,48 @@ void BuildSpyEssentials(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 		.getter = &AyuSettings::saveDeletedInComments,
 		.setter = &AyuSettings::setSaveDeletedInComments,
 	});
+	ayu.addCollapsibleToggle({
+		.id = u"ayu/saveDeletedMedia"_q,
+		.title = tr::ayu_SettingsSaveDeletedMedia(),
+		.checkboxes = {
+			NestedEntry{
+				tr::ayu_SettingsSaveDeletedPhotos(tr::now),
+				[] { return AyuSettings::getInstance().saveDeletedPhotos(); },
+				[](bool v) { AyuSettings::getInstance().setSaveDeletedPhotos(v); }
+			},
+			NestedEntry{
+				tr::ayu_SettingsSaveDeletedVideos(tr::now),
+				[] { return AyuSettings::getInstance().saveDeletedVideos(); },
+				[](bool v) { AyuSettings::getInstance().setSaveDeletedVideos(v); }
+			},
+			NestedEntry{
+				tr::ayu_SettingsSaveDeletedVoices(tr::now),
+				[] { return AyuSettings::getInstance().saveDeletedVoices(); },
+				[](bool v) { AyuSettings::getInstance().setSaveDeletedVoices(v); }
+			},
+			NestedEntry{
+				tr::ayu_SettingsSaveDeletedRounds(tr::now),
+				[] { return AyuSettings::getInstance().saveDeletedRounds(); },
+				[](bool v) { AyuSettings::getInstance().setSaveDeletedRounds(v); }
+			},
+			NestedEntry{
+				tr::ayu_SettingsSaveDeletedGifs(tr::now),
+				[] { return AyuSettings::getInstance().saveDeletedGifs(); },
+				[](bool v) { AyuSettings::getInstance().setSaveDeletedGifs(v); }
+			},
+			NestedEntry{
+				tr::ayu_SettingsSaveDeletedStickers(tr::now),
+				[] { return AyuSettings::getInstance().saveDeletedStickers(); },
+				[](bool v) { AyuSettings::getInstance().setSaveDeletedStickers(v); }
+			},
+			NestedEntry{
+				tr::ayu_SettingsSaveDeletedFiles(tr::now),
+				[] { return AyuSettings::getInstance().saveDeletedFiles(); },
+				[](bool v) { AyuSettings::getInstance().setSaveDeletedFiles(v); }
+			}
+		},
+		.toggledWhenAll = false,
+	});
 	ayu.addSettingToggle({
 		.id = u"ayu/restoreDeletedInChat"_q,
 		.title = tr::ayu_SettingsRestoreDeletedInChat(),

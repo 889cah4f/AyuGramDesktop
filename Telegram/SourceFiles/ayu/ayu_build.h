@@ -6,13 +6,15 @@
 // Copyright @Radolyn, 2026
 #pragma once
 
+#include "ui/text/text_entity.h"
+
 namespace AyuBuild {
 
 [[nodiscard]] bool IsCommunity();
 [[nodiscard]] QString Tag();
 [[nodiscard]] QString Author();
 [[nodiscard]] QString AuthorLink();
-[[nodiscard]] QString CommunityLabel();
 [[nodiscard]] QString VersionSuffix();
+[[nodiscard]] TextWithEntities ByAuthor();
 
 } // namespace AyuBuild

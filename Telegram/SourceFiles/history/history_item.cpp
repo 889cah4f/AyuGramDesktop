@@ -86,6 +86,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/ayu_settings.h"
 #include "ayu/features/filters/filters_controller.h"
 #include "ayu/features/message_shot/message_shot.h"
+#include "ayu/ayu_state.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "ui/emoji_config.h"
 
@@ -2734,6 +2735,7 @@ void HistoryItem::applySentMessage(const MTPDmessage &data) {
 	}
 	setPostAuthor(data.vpost_author().value_or_empty());
 	setIsPinned(data.is_pinned());
+	applyServerDate(data.vdate().v);
 	contributeToSlowmode(data.vdate().v);
 	addToSharedMediaIndex();
 	addToMessagesIndex();
@@ -2773,6 +2775,7 @@ void HistoryItem::applySentMessage(
 		(existingRichPage && existingRichPage->page)
 			? existingRichPage->fullPage
 			: nullptr);
+	applyServerDate(data.vdate().v);
 	contributeToSlowmode(data.vdate().v);
 	if (!wasAlready) {
 		addToSharedMediaIndex();
@@ -4400,6 +4403,13 @@ void HistoryItem::setReplyFields(
 		// current topic(), so without this the old one keeps a raw pointer
 		// to an item it will never hear about again.
 		wasTopic->applyItemRemoved(id);
+	}
+}
+
+void HistoryItem::applyServerDate(TimeId date) {
+	if (date > 0 && _date != date && !isScheduled()) {
+		_date = date;
+		_history->owner().requestItemViewRefresh(this);
 	}
 }
 
@@ -8009,6 +8019,12 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 
 void HistoryItem::processAction(const MTPMessageAction &action) {
 	action.match([&](const MTPDmessageActionChatAddUser &data) {
+		for (const auto &user : data.vusers().v) {
+			if (peerFromUser(user) == _from->id) {
+				AyuState::markJoinMessage(_history->peer->id, id);
+				break;
+			}
+		}
 		if (const auto channel = _history->peer->asMegagroup()) {
 			const auto selfUserId = _history->session().userId();
 			for (const auto &item : data.vusers().v) {
@@ -8019,6 +8035,7 @@ void HistoryItem::processAction(const MTPMessageAction &action) {
 			}
 		}
 	}, [&](const MTPDmessageActionChatJoinedByLink &data) {
+		AyuState::markJoinMessage(_history->peer->id, id);
 		if (_from->isSelf()) {
 			if (const auto channel = _history->peer->asMegagroup()) {
 				channel->mgInfo->joinedMessageFound = true;
@@ -8043,12 +8060,14 @@ void HistoryItem::processAction(const MTPMessageAction &action) {
 	}, [&](const MTPDmessageActionContactSignUp &) {
 		_flags |= MessageFlag::IsContactSignUp;
 	}, [&](const MTPDmessageActionChatJoinedByRequest &data) {
+		AyuState::markJoinMessage(_history->peer->id, id);
 		if (_from->isSelf()) {
 			if (const auto channel = _history->peer->asMegagroup()) {
 				channel->mgInfo->joinedMessageFound = true;
 			}
 		}
 	}, [&](const MTPDmessageActionChatJoinedViaCommunity &data) {
+		AyuState::markJoinMessage(_history->peer->id, id);
 		if (_from->isSelf()) {
 			if (const auto channel = _history->peer->asMegagroup()) {
 				channel->mgInfo->joinedMessageFound = true;

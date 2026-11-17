@@ -16,6 +16,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QTemporaryFile>
 #include <QtGui/QPainter>
 
+#include <thread>
+
 extern "C" {
 #include <libavutil/audio_fifo.h>
 #include <libavutil/samplefmt.h>
@@ -242,7 +244,17 @@ struct ColorDescription {
 		color,
 		AV_PIX_FMT_YUV420P,
 		0.,
-		nullptr);
+		[](not_null<AVCodecContext*> encoder) {
+			const auto threads = std::clamp(
+				int(std::thread::hardware_concurrency()),
+				1,
+				8);
+			encoder->thread_count = threads;
+			if (threads > 1) {
+				encoder->slices = threads;
+			}
+			return true;
+		});
 }
 
 [[nodiscard]] bool SetupVp9StickerOptions(

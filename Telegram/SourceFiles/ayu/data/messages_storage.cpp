@@ -14,6 +14,7 @@
 #include "data/data_channel.h"
 #include "data/data_forum_topic.h"
 #include "data/data_session.h"
+#include "data/data_types.h"
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_item_components.h"
@@ -116,6 +117,7 @@ void addDeletedMessage(not_null<HistoryItem*> item) {
 	}
 
 	AyuDatabase::addDeletedMessage(message);
+	fetchDeletedMedia(item, message);
 }
 
 std::vector<AyuMessageBase>
@@ -123,6 +125,138 @@ getDeletedMessages(not_null<PeerData*> peer, ID topicId, ID minId, ID maxId, int
 	const ID userId = peer->session().userId().bare & PeerId::kChatTypeMask;
 	return convertToBase(
 		AyuDatabase::getDeletedMessages(userId, getDialogIdFromPeer(peer), topicId, minId, maxId, totalLimit, searchQuery.toStdString()));
+}
+
+namespace {
+
+constexpr auto kFilterBatch = 400;
+constexpr auto kFilterMaxPasses = 120;
+constexpr auto kSerializedVersionTag = qint32(0x7FFFFFFF);
+
+[[nodiscard]] int SerializedDocumentType(const std::vector<char> &serialized) {
+	if (serialized.empty()) {
+		return -1;
+	}
+	auto bytes = QByteArray::fromRawData(
+		serialized.data(),
+		int(serialized.size()));
+	auto stream = QDataStream(&bytes, QIODevice::ReadOnly);
+	stream.setVersion(QDataStream::Qt_5_1);
+	quint64 id = 0, access = 0;
+	qint32 date = 0, versionTag = 0, version = 0;
+	qint32 dc = 0, size = 0, width = 0, height = 0, type = -1;
+	QByteArray fileReference;
+	QString name, mime;
+	stream >> id >> access >> date >> fileReference >> versionTag;
+	if (versionTag == kSerializedVersionTag) {
+		stream >> version;
+	}
+	stream >> name >> mime >> dc >> size >> width >> height >> type;
+	if (stream.status() != QDataStream::Ok
+		|| type < FileDocument
+		|| type > WallPaperDocument) {
+		return -1;
+	}
+	return type;
+}
+
+[[nodiscard]] bool MatchesFilter(
+		const AyuMessageBase &message,
+		DeletedFilter filter) {
+	if (filter == DeletedFilter::All) {
+		return true;
+	} else if (message.documentType == int(SavedMediaType::Photo)) {
+		return (filter == DeletedFilter::Media);
+	} else if (message.documentType != int(SavedMediaType::Document)) {
+		return false;
+	}
+	const auto mime = QString::fromStdString(message.mimeType).toLower();
+	auto type = SerializedDocumentType(message.documentSerialized);
+	if (type < 0) {
+		type = mime.startsWith(u"video/"_q)
+			? VideoDocument
+			: (mime == u"audio/ogg"_q)
+			? VoiceDocument
+			: FileDocument;
+	}
+	switch (filter) {
+	case DeletedFilter::Media: return (type == VideoDocument);
+	case DeletedFilter::Gifs: return (type == AnimatedDocument);
+	case DeletedFilter::Voice: return (type == VoiceDocument);
+	case DeletedFilter::Rounds: return (type == RoundVideoDocument);
+	case DeletedFilter::Files:
+		return (type == FileDocument) || (type == SongDocument);
+	default: return false;
+	}
+}
+
+} // namespace
+
+std::vector<AyuMessageBase> getDeletedMessages(
+		not_null<PeerData*> peer,
+		ID topicId,
+		ID minId,
+		ID maxId,
+		int totalLimit,
+		const QString &searchQuery,
+		DeletedFilter filter) {
+	if (filter == DeletedFilter::All) {
+		return getDeletedMessages(
+			peer,
+			topicId,
+			minId,
+			maxId,
+			totalLimit,
+			searchQuery);
+	}
+	const ID userId = peer->session().userId().bare & PeerId::kChatTypeMask;
+	const auto dialogId = getDialogIdFromPeer(peer);
+	const auto query = searchQuery.toStdString();
+	const auto down = (minId != 0 && maxId == 0);
+	auto result = std::vector<AyuMessageBase>();
+	auto from = minId;
+	auto till = maxId;
+	for (auto pass = 0; pass != kFilterMaxPasses; ++pass) {
+		const auto batch = AyuDatabase::getDeletedMessages(
+			userId,
+			dialogId,
+			topicId,
+			from,
+			till,
+			kFilterBatch,
+			query,
+			true);
+		if (batch.empty()) {
+			break;
+		}
+		for (const auto &message : batch) {
+			if (MatchesFilter(message, filter)) {
+				result.push_back(message);
+			}
+		}
+		if (int(batch.size()) < kFilterBatch
+			|| int(result.size()) >= totalLimit) {
+			break;
+		}
+		if (down) {
+			from = batch.front().messageId;
+		} else {
+			till = batch.back().messageId;
+		}
+	}
+	std::sort(result.begin(), result.end(), [](
+			const AyuMessageBase &a,
+			const AyuMessageBase &b) {
+		return a.messageId > b.messageId;
+	});
+	if (int(result.size()) > totalLimit) {
+		if (down) {
+			result.erase(result.begin(), result.end() - totalLimit);
+		} else {
+			result.resize(totalLimit);
+		}
+	}
+	return result;
 }
 
 bool hasDeletedMessages(not_null<PeerData*> peer, ID topicId) {

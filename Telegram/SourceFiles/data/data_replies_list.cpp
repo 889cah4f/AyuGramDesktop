@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/utils/telegram_helpers.h"
 
 
 namespace Data {
@@ -1010,7 +1011,7 @@ void RepliesList::sendReadTillRequest() {
 	api->request(base::take(_readRequestId)).cancel();
 
 	const auto &ghost = AyuSettings::ghost(&_history->session());
-	if (!ghost.sendReadMessages()) {
+	if (!ghost.sendReadMessages() && !isGhostExcluded(_history->peer)) {
 		return;
 	}
 

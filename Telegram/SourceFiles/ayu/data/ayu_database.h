@@ -26,10 +26,11 @@ std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageI
 bool hasRevisions(ID userId, ID dialogId, ID messageId);
 
 void addDeletedMessage(const DeletedMessage &message);
-std::vector<DeletedMessage> getDeletedMessages(ID userId, ID dialogId, ID topicId, ID minId, ID maxId, int totalLimit, const std::string &searchQuery = "");
+std::vector<DeletedMessage> getDeletedMessages(ID userId, ID dialogId, ID topicId, ID minId, ID maxId, int totalLimit, const std::string &searchQuery = "", bool mediaOnly = false);
 bool hasDeletedMessages(ID userId, ID dialogId, ID topicId);
 void removeDeletedMessage(ID userId, ID dialogId, ID messageId);
 void clearDeletedMessages(ID userId, ID dialogId, ID topicId);
+void updateDeletedMessageMedia(ID userId, ID dialogId, ID messageId, const std::string &mediaPath, const std::string &hqThumbPath);
 std::vector<DeletedMessage> getDeletedMessagesByDate(ID userId, ID dialogId, ID topicId, int dateFrom, int dateTill, int totalLimit);
 int countDeletedMessages(ID userId, ID dialogId);
 std::vector<ID> getDialogsWithDeletedMessages(ID userId);

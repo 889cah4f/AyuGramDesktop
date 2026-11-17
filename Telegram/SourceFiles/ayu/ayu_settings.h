@@ -293,6 +293,7 @@ public:
 	[[nodiscard]] bool filtersEnabled() const { return _filtersEnabled.current(); }
 	[[nodiscard]] bool filtersEnabledInChats() const { return _filtersEnabledInChats.current(); }
 	[[nodiscard]] bool hideFromBlocked() const { return _hideFromBlocked.current(); }
+	[[nodiscard]] bool hideJoinMessages() const { return _hideJoinMessages.current(); }
 	[[nodiscard]] bool semiTransparentDeletedMessages() const { return _semiTransparentDeletedMessages.current(); }
 	[[nodiscard]] bool disableAds() const { return _disableAds.current(); }
 	[[nodiscard]] bool disableStories() const { return _disableStories.current(); }
@@ -376,10 +377,23 @@ public:
 
 	[[nodiscard]] bool saveDeletedInChannels() const { return _saveDeletedInChannels.current(); }
 	[[nodiscard]] bool saveDeletedInComments() const { return _saveDeletedInComments.current(); }
+	[[nodiscard]] bool saveDeletedPhotos() const { return _saveDeletedPhotos.current(); }
+	[[nodiscard]] bool saveDeletedVideos() const { return _saveDeletedVideos.current(); }
+	[[nodiscard]] bool saveDeletedVoices() const { return _saveDeletedVoices.current(); }
+	[[nodiscard]] bool saveDeletedRounds() const { return _saveDeletedRounds.current(); }
+	[[nodiscard]] bool saveDeletedGifs() const { return _saveDeletedGifs.current(); }
+	[[nodiscard]] bool saveDeletedStickers() const { return _saveDeletedStickers.current(); }
+	[[nodiscard]] bool saveDeletedFiles() const { return _saveDeletedFiles.current(); }
 	[[nodiscard]] bool isDeletedSavingExcluded(int64 dialogId) const { return _deletedExcludedDialogs.contains(dialogId); }
 	[[nodiscard]] const std::unordered_set<int64> &deletedExcludedDialogs() const { return _deletedExcludedDialogs; }
 	void addDeletedExcludedDialog(int64 dialogId);
 	void removeDeletedExcludedDialog(int64 dialogId);
+	[[nodiscard]] bool isGhostExcluded(int64 dialogId) const { return _ghostExcludedDialogs.contains(dialogId); }
+	void addGhostExcludedDialog(int64 dialogId);
+	void removeGhostExcludedDialog(int64 dialogId);
+	[[nodiscard]] bool isFirstMessageOnly(int64 dialogId) const { return _firstMessageOnlyDialogs.contains(dialogId); }
+	void addFirstMessageOnlyDialog(int64 dialogId);
+	void removeFirstMessageOnlyDialog(int64 dialogId);
 	[[nodiscard]] bool hideWalletInDrawer() const { return _hideWalletInDrawer.current(); }
 	[[nodiscard]] const QString &customAppName() const { return _customAppName.current(); }
 	[[nodiscard]] QString effectiveAppName() const;
@@ -400,6 +414,13 @@ public:
 
 	void setSaveDeletedInChannels(bool val);
 	void setSaveDeletedInComments(bool val);
+	void setSaveDeletedPhotos(bool val);
+	void setSaveDeletedVideos(bool val);
+	void setSaveDeletedVoices(bool val);
+	void setSaveDeletedRounds(bool val);
+	void setSaveDeletedGifs(bool val);
+	void setSaveDeletedStickers(bool val);
+	void setSaveDeletedFiles(bool val);
 	void setHideWalletInDrawer(bool val);
 	void setCustomAppName(const QString &val);
 	void setRoundVideoSize(int val);
@@ -426,6 +447,7 @@ public:
 	void setFiltersEnabled(bool val);
 	void setFiltersEnabledInChats(bool val);
 	void setHideFromBlocked(bool val);
+	void setHideJoinMessages(bool val);
 	void setSemiTransparentDeletedMessages(bool val);
 	void setDisableAds(bool val);
 	void setDisableStories(bool val);
@@ -697,6 +719,7 @@ private:
 	rpl::variable<bool> _filtersEnabled = false;
 	rpl::variable<bool> _filtersEnabledInChats = false;
 	rpl::variable<bool> _hideFromBlocked = false;
+	rpl::variable<bool> _hideJoinMessages = false;
 	rpl::variable<bool> _semiTransparentDeletedMessages = false;
 	rpl::variable<bool> _disableAds = true;
 	rpl::variable<bool> _disableStories = false;
@@ -780,7 +803,16 @@ private:
 
 	rpl::variable<bool> _saveDeletedInChannels = true;
 	rpl::variable<bool> _saveDeletedInComments = true;
+	rpl::variable<bool> _saveDeletedPhotos = true;
+	rpl::variable<bool> _saveDeletedVideos = true;
+	rpl::variable<bool> _saveDeletedVoices = true;
+	rpl::variable<bool> _saveDeletedRounds = true;
+	rpl::variable<bool> _saveDeletedGifs = true;
+	rpl::variable<bool> _saveDeletedStickers = true;
+	rpl::variable<bool> _saveDeletedFiles = true;
 	std::unordered_set<int64> _deletedExcludedDialogs;
+	std::unordered_set<int64> _ghostExcludedDialogs;
+	std::unordered_set<int64> _firstMessageOnlyDialogs;
 	rpl::variable<bool> _hideWalletInDrawer = false;
 	rpl::variable<QString> _customAppName;
 	rpl::variable<int> _roundVideoSize = 100;

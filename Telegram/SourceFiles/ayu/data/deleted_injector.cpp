@@ -6,6 +6,8 @@
 // Copyright @Radolyn, 2026
 #include "ayu/data/deleted_injector.h"
 
+#include "lang_auto.h"
+
 #include "ayu/ayu_settings.h"
 #include "ayu/data/deleted_media.h"
 #include "ayu/data/messages_storage.h"
@@ -193,6 +195,11 @@ base::flat_set<FullMsgId> InjectedPending;
 		: AyuMapper::deserializeTextWithEntities(message.textEntities);
 	const auto media = MediaFor(history, message);
 	const auto post = history->peer->isBroadcast();
+	auto text = QString::fromStdString(message.text);
+	if (!media && message.documentType != 0 && text.isEmpty()) {
+		text = QString::fromUtf8("📎 ")
+			+ tr::ayu_DeletedMediaUnavailable(tr::now);
+	}
 
 	auto flags = Flags(0);
 	if (from && !post) {
@@ -233,7 +240,7 @@ base::flat_set<FullMsgId> InjectedPending;
 		MTPPeer(),
 		MTPMessageReplyHeader(),
 		MTP_int(message.date),
-		MTP_string(QString::fromStdString(message.text)),
+		MTP_string(text),
 		media ? *media : MTPMessageMedia(),
 		MTPReplyMarkup(),
 		entities,
@@ -297,7 +304,7 @@ QVector<MTPMessage> mergeDeletedIntoSlice(
 	auto injected = 0;
 	for (const auto &message : stored) {
 		const auto id = MsgId(message.messageId);
-		if (present.contains(id)) {
+		if (!present.emplace(id).second) {
 			continue;
 		} else if (history->owner().message(peer->id, id)) {
 			continue;

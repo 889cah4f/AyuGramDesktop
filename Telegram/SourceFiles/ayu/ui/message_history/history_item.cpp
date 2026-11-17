@@ -67,6 +67,7 @@ void GenerateItems(
 	not_null<HistoryView::ElementDelegate*> delegate,
 	not_null<History*> history,
 	AyuMessageBase message,
+	bool useSentDate,
 	Fn<void(OwnedItem item, TimeId sentDate, MsgId)> callback) {
 	PeerData *from = history->owner().userLoaded(message.fromId);
 	if (!from) {
@@ -75,13 +76,18 @@ void GenerateItems(
 	if (!from) {
 		from = reinterpret_cast<PeerData*>(history->owner().chatLoaded(message.fromId));
 	}
-	const auto date = message.entityCreateDate;
+	const auto date = (useSentDate && message.date > 0)
+		? TimeId(message.date)
+		: TimeId(message.entityCreateDate);
 	const auto addPart = [&](
 		not_null<HistoryItem*> item,
 		TimeId sentDate = 0,
 		MsgId realId = MsgId())
 	{
-		return callback(OwnedItem(delegate, item), sentDate, realId);
+		return callback(
+			OwnedItem(delegate, item),
+			sentDate,
+			realId ? realId : MsgId(message.messageId));
 	};
 
 	const auto makeSimpleTextMessage = [&](TextWithEntities &&text)
@@ -151,7 +157,7 @@ void GenerateItems(
 		return;
 	} else if (message.documentType != 0 && textAndEntities.text.isEmpty()) {
 		textAndEntities = Ui::Text::WithEntities(
-			QString::fromUtf8("ð ") + tr::ayu_DeletedMediaUnavailable(tr::now));
+			QString::fromUtf8("📎 ") + tr::ayu_DeletedMediaUnavailable(tr::now));
 	}
 	addSimpleTextMessage(std::move(textAndEntities));
 }

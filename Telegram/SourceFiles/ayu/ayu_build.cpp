@@ -7,6 +7,7 @@
 #include "ayu/ayu_build.h"
 
 #include "ayu_build_config.h"
+#include "ui/text/text_utilities.h"
 
 namespace AyuBuild {
 
@@ -26,14 +27,16 @@ QString AuthorLink() {
 	return IsCommunity() ? QString::fromUtf8(AYU_BUILD_AUTHOR_LINK) : QString();
 }
 
-QString CommunityLabel() {
-	return IsCommunity()
-		? Author() + QString::fromUtf8(" for AyuGram community")
-		: QString();
+QString VersionSuffix() {
+	return IsCommunity() ? (QString::fromUtf8(" by ") + Tag()) : QString();
 }
 
-QString VersionSuffix() {
-	return IsCommunity() ? QString::fromUtf8(" (") + Tag() + ')' : QString();
+TextWithEntities ByAuthor() {
+	if (!IsCommunity()) {
+		return {};
+	}
+	return TextWithEntities{ QString::fromUtf8(" by ") }.append(
+		Ui::Text::Link(Tag(), AuthorLink()));
 }
 
 } // namespace AyuBuild

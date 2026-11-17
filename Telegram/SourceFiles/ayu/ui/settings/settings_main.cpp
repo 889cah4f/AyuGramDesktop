@@ -68,36 +68,27 @@ void BuildLogo(SectionBuilder &builder) {
 
 void BuildVersionInfo(SectionBuilder &builder) {
 	builder.add([](const WidgetContext &ctx) -> SectionBuilder::WidgetToAdd {
-		return {
-			.widget = object_ptr<Ui::FlatLabel>(
-				ctx.container,
-				AyuSettings::getInstance().customAppNameValue(
-				) | rpl::map([](const QString &) {
-					return AyuSettings::getInstance().effectiveAppNameFull()
+		auto label = object_ptr<Ui::FlatLabel>(
+			ctx.container,
+			AyuSettings::getInstance().customAppNameValue(
+			) | rpl::map([](const QString &) {
+				auto result = TextWithEntities{
+					AyuSettings::getInstance().effectiveAppNameFull()
 						+ QString(" v")
 						+ QString::fromLatin1(AppVersionStr)
-						+ AyuBuild::VersionSuffix();
-				}),
-				st::boxTitle),
+				};
+				if (AyuBuild::IsCommunity()) {
+					result.append(QString(" -")).append(AyuBuild::ByAuthor());
+				}
+				return result;
+			}),
+			st::boxTitle);
+		label->setLinksTrusted();
+		return {
+			.widget = std::move(label),
 			.align = style::al_top,
 		};
 	});
-
-	if (AyuBuild::IsCommunity()) {
-		builder.add([](const WidgetContext &ctx) -> SectionBuilder::WidgetToAdd {
-			auto label = object_ptr<Ui::FlatLabel>(
-				ctx.container,
-				rpl::single(Ui::Text::Link(
-					QString::fromUtf8("Build by ") + AyuBuild::Author(),
-					AyuBuild::AuthorLink())),
-				st::centeredBoxLabel);
-			label->setLinksTrusted();
-			return {
-				.widget = std::move(label),
-				.align = style::al_top,
-			};
-		});
-	}
 
 	builder.addSkip();
 

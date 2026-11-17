@@ -700,9 +700,16 @@ void Histories::sendReadRequests() {
 	// AyuGram sendReadMessages
 	const auto &ghost = AyuSettings::ghost(&_owner->session());
 	if (!ghost.sendReadMessages()) {
-		DEBUG_LOG(("[AyuGram] Don't read messages"));
-		_states.clear();
-		return;
+		for (auto i = begin(_states); i != end(_states);) {
+			if (isGhostExcluded(i->first->peer)) {
+				++i;
+			} else {
+				i = _states.erase(i);
+			}
+		}
+		if (_states.empty()) {
+			return;
+		}
 	}
 
 	if (_states.empty()) {

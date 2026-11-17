@@ -36,6 +36,7 @@
 #include "ui/chat/chat_theme.h"
 #include "ui/effects/path_shift_gradient.h"
 #include "ui/layers/box_content.h"
+#include "window/section_widget.h"
 #include "window/themes/window_theme.h"
 
 namespace AyuFeatures::MessageShot {
@@ -377,9 +378,24 @@ void PaintCard(
 	p.drawRoundedRect(rect, radius, radius);
 }
 
-void PaintBackground(QPainter &p, const QRect &rect, int gradientPreset) {
+void PaintBackground(
+		QPainter &p,
+		const QRect &rect,
+		int gradientPreset,
+		Ui::ChatTheme *wallpaper = nullptr) {
 	if (gradientPreset > 0) {
 		p.fillRect(rect, GradientPreset(gradientPreset, rect));
+	} else if (wallpaper) {
+		p.fillRect(rect, makeDefaultBackgroundColor());
+		p.save();
+		p.translate(rect.topLeft());
+		Window::SectionWidget::PaintBackground(
+			p,
+			wallpaper,
+			rect.size(),
+			QRect(QPoint(), rect.size()),
+			true);
+		p.restore();
 	} else {
 		p.fillRect(rect, makeDefaultBackgroundColor());
 	}
@@ -387,7 +403,7 @@ void PaintBackground(QPainter &p, const QRect &rect, int gradientPreset) {
 
 [[nodiscard]] QImage ComposeClassic(
 		const std::vector<RenderedPart> &parts,
-		bool showBackground,
+		Ui::ChatTheme *wallpaper,
 		int gradientPreset) {
 	const auto ratio = style::DevicePixelRatio();
 	auto width = 0;
@@ -411,15 +427,16 @@ void PaintBackground(QPainter &p, const QRect &rect, int gradientPreset) {
 		}
 	}
 	auto result = addPadding(stacked);
-	if (!showBackground) {
-		return result;
-	}
 	auto withBackground = QImage(result.size(), QImage::Format_ARGB32_Premultiplied);
 	withBackground.setDevicePixelRatio(ratio);
 	withBackground.fill(Qt::transparent);
 	{
 		auto q = QPainter(&withBackground);
-		PaintBackground(q, QRect(QPoint(), result.size() / ratio), gradientPreset);
+		PaintBackground(
+			q,
+			QRect(QPoint(), result.size() / ratio),
+			gradientPreset,
+			wallpaper);
 		q.drawImage(0, 0, result);
 	}
 	return withBackground;
@@ -427,6 +444,7 @@ void PaintBackground(QPainter &p, const QRect &rect, int gradientPreset) {
 
 [[nodiscard]] QImage ComposeCards(
 		const std::vector<RenderedPart> &parts,
+		Ui::ChatTheme *wallpaper,
 		int gradientPreset) {
 	const auto ratio = style::DevicePixelRatio();
 	struct Card {
@@ -457,7 +475,11 @@ void PaintBackground(QPainter &p, const QRect &rect, int gradientPreset) {
 	result.setDevicePixelRatio(ratio);
 	result.fill(Qt::transparent);
 	auto q = QPainter(&result);
-	PaintBackground(q, QRect(0, 0, totalWidth, totalHeight), gradientPreset);
+	PaintBackground(
+		q,
+		QRect(0, 0, totalWidth, totalHeight),
+		gradientPreset,
+		wallpaper);
 	auto y = kOuterPadding;
 	for (const auto &card : cards) {
 		const auto rect = QRect(
@@ -815,11 +837,14 @@ void Make(not_null<QWidget*> box, const ShotConfig &config, const Fn<void(QImage
 			});
 		}
 
+		const auto wallpaper = showBackground
+			? controller->currentChatTheme().get()
+			: nullptr;
 		auto result = (shotStyle == 1)
-			? ComposeCards(parts, gradientPreset)
+			? ComposeCards(parts, wallpaper, gradientPreset)
 			: (shotStyle == 2)
 			? ComposeCodeWindow(parts, gradientPreset)
-			: ComposeClassic(parts, showBackground, gradientPreset);
+			: ComposeClassic(parts, wallpaper, gradientPreset);
 		callback(result, final);
 	};
 

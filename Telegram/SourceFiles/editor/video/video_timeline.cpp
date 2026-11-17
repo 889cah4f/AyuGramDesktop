@@ -20,6 +20,13 @@ namespace {
 
 constexpr auto kMaxFrames = 24;
 constexpr auto kDotDuration = crl::time(500);
+constexpr auto kHoldDuration = crl::time(600);
+constexpr auto kHoldSlop = 4;
+constexpr auto kZoomDuration = crl::time(400);
+constexpr auto kZoomMinSpan = crl::time(1500);
+constexpr auto kZoomMaxSpan = crl::time(4000);
+constexpr auto kPanInterval = crl::time(16);
+constexpr auto kPanMaxPixels = 48;
 
 // Frames are scaled on paint, so small width drift needs no re-extract.
 constexpr auto kFrameWidthTolerance = 0.25;
@@ -38,7 +45,11 @@ VideoTimeline::VideoTimeline(
 , _minDuration(std::min(_descriptor.minDuration, _maxDuration))
 , _from(0)
 , _till(_maxDuration)
-, _cover(0) {
+, _cover(0)
+, _viewFrom(0)
+, _viewTill(_duration)
+, _holdTimer([=] { zoomIn(); })
+, _panTimer([=] { panStep(); }) {
 	setMouseTracking(true);
 
 	// Restore the selection when the editor is opened for a second time.
@@ -104,21 +115,160 @@ void VideoTimeline::moveWindowTo(crl::time center) {
 	_trimChanges.fire_copy(_from);
 }
 
+std::pair<crl::time, crl::time> VideoTimeline::currentView() const {
+	if (!_viewAnimation.animating()) {
+		return { _viewFrom, _viewTill };
+	}
+	const auto progress = _viewAnimation.value(1.);
+	const auto from = _viewFromStart
+		+ (_viewFrom - _viewFromStart) * progress;
+	const auto till = _viewTillStart
+		+ (_viewTill - _viewTillStart) * progress;
+	return {
+		crl::time(base::SafeRound(from)),
+		std::max(crl::time(base::SafeRound(till)), crl::time(from) + 1),
+	};
+}
+
+bool VideoTimeline::zoomed() const {
+	return (_viewFrom > 0)
+		|| (_viewTill < _duration)
+		|| _viewAnimation.animating();
+}
+
 crl::time VideoTimeline::timeAt(int x) const {
 	const auto strip = stripRect();
 	if (strip.width() <= 0) {
 		return 0;
 	}
+	const auto [from, till] = currentView();
 	const auto shift = std::clamp(x - strip.x(), 0, strip.width());
-	return crl::time(
-		base::SafeRound(shift * float64(_duration) / strip.width()));
+	return std::clamp(
+		from + crl::time(base::SafeRound(
+			shift * float64(till - from) / strip.width())),
+		crl::time(0),
+		_duration);
+}
+
+int VideoTimeline::xAtView(
+		std::pair<crl::time, crl::time> view,
+		crl::time time) const {
+	const auto strip = stripRect();
+	const auto [from, till] = view;
+	const auto clamped = std::clamp(time, from, till);
+	return strip.x() + int(base::SafeRound(
+		(clamped - from) * float64(strip.width()) / (till - from)));
 }
 
 int VideoTimeline::xAt(crl::time time) const {
+	return xAtView(currentView(), time);
+}
+
+crl::time VideoTimeline::grabbedTime() const {
+	switch (_grab) {
+	case Grab::Left: return _from;
+	case Grab::Right: return _till;
+	case Grab::Head: return _cover;
+	default: return -1;
+	}
+}
+
+void VideoTimeline::animateViewTo(crl::time from, crl::time till) {
+	const auto [nowFrom, nowTill] = currentView();
+	_viewFromStart = nowFrom;
+	_viewTillStart = nowTill;
+	_viewFrom = from;
+	_viewTill = till;
+	_viewAnimation.stop();
+	_viewAnimation.start(
+		[=] { update(); },
+		0.,
+		1.,
+		kZoomDuration,
+		anim::easeOutCubic);
+}
+
+void VideoTimeline::restartHold(QPoint position) {
+	_holdAnchor = position;
+	if (_zoomStage > 0 || grabbedTime() < 0) {
+		_holdTimer.cancel();
+		return;
+	}
+	_holdTimer.callOnce(kHoldDuration);
+}
+
+void VideoTimeline::zoomIn() {
+	const auto time = grabbedTime();
 	const auto strip = stripRect();
-	const auto clamped = std::clamp(time, crl::time(0), _duration);
-	return strip.x() + int(base::SafeRound(
-		clamped * float64(strip.width()) / _duration));
+	if (time < 0 || strip.width() <= 0) {
+		return;
+	}
+	if (_zoomStage > 0) {
+		return;
+	}
+	const auto span = std::clamp(
+		_duration / 12,
+		kZoomMinSpan,
+		kZoomMaxSpan);
+	if (span * 4 >= _duration * 3) {
+		return;
+	}
+	_zoomStage = 1;
+	const auto fraction = std::clamp(
+		(_lastPosition.x() - _grabShift - strip.x()) / float64(strip.width()),
+		0.,
+		1.);
+	const auto from = std::clamp(
+		time - crl::time(base::SafeRound(span * fraction)),
+		crl::time(0),
+		_duration - span);
+	const auto till = from + span;
+	_grabShift = _lastPosition.x() - xAtView({ from, till }, time);
+	animateViewTo(from, till);
+}
+
+void VideoTimeline::zoomOut() {
+	_holdTimer.cancel();
+	_panTimer.cancel();
+	_zoomStage = 0;
+	if (_viewFrom > 0 || _viewTill < _duration) {
+		animateViewTo(0, _duration);
+	}
+}
+
+void VideoTimeline::panStep() {
+	const auto strip = stripRect();
+	if (_grab == Grab::None
+		|| strip.width() <= 0
+		|| (_viewFrom <= 0 && _viewTill >= _duration)) {
+		_panTimer.cancel();
+		return;
+	}
+	const auto x = _lastPosition.x() - _grabShift;
+	const auto overshoot = (x < strip.x())
+		? std::max(x - strip.x(), -kPanMaxPixels)
+		: (x > strip.x() + strip.width())
+		? std::min(x - strip.x() - strip.width(), kPanMaxPixels)
+		: 0;
+	if (!overshoot) {
+		_panTimer.cancel();
+		return;
+	}
+	const auto span = _viewTill - _viewFrom;
+	const auto delta = crl::time(base::SafeRound(
+		overshoot * float64(span) / strip.width() / 2.));
+	const auto from = std::clamp(
+		_viewFrom + (delta ? delta : (overshoot > 0 ? 1 : -1)),
+		crl::time(0),
+		_duration - span);
+	if (from == _viewFrom) {
+		_panTimer.cancel();
+		return;
+	}
+	_viewAnimation.stop();
+	_viewFrom = from;
+	_viewTill = from + span;
+	applyGrab(_lastPosition);
 }
 
 QPoint VideoTimeline::coverDot() const {
@@ -259,6 +409,7 @@ void VideoTimeline::mousePressEvent(QMouseEvent *e) {
 		return;
 	}
 	const auto position = e->pos();
+	_lastPosition = position;
 	_grab = grabAt(position);
 	if (_grab == Grab::Left) {
 		_grabShift = position.x() - xAt(_from);
@@ -278,6 +429,7 @@ void VideoTimeline::mousePressEvent(QMouseEvent *e) {
 	}
 	_draggingChanges.fire(true);
 	applyGrab(position);
+	restartHold(position);
 }
 
 void VideoTimeline::mouseMoveEvent(QMouseEvent *e) {
@@ -285,7 +437,19 @@ void VideoTimeline::mouseMoveEvent(QMouseEvent *e) {
 		updateCursor(grabAt(e->pos()));
 		return;
 	}
-	applyGrab(e->pos());
+	_lastPosition = e->pos();
+	if ((_lastPosition - _holdAnchor).manhattanLength() > kHoldSlop) {
+		restartHold(_lastPosition);
+	}
+	applyGrab(_lastPosition);
+	if (_viewFrom > 0 || _viewTill < _duration) {
+		const auto strip = stripRect();
+		const auto x = _lastPosition.x() - _grabShift;
+		if ((x < strip.x() || x > strip.x() + strip.width())
+			&& !_panTimer.isActive()) {
+			_panTimer.callEach(kPanInterval);
+		}
+	}
 }
 
 void VideoTimeline::mouseReleaseEvent(QMouseEvent *e) {
@@ -295,6 +459,7 @@ void VideoTimeline::mouseReleaseEvent(QMouseEvent *e) {
 	const auto wasHead = (_grab == Grab::Head);
 	_grab = Grab::None;
 	_grabShift = 0;
+	zoomOut();
 	if (wasHead) {
 		_dotActive.start(
 			[=] { update(); },
@@ -384,6 +549,34 @@ void VideoTimeline::paintFrames(QPainter &p, const QRect &strip) {
 		return;
 	}
 	const auto count = int(_frames.size());
+	if (count > 0 && zoomed()) {
+		const auto [from, till] = currentView();
+		const auto span = float64(till - from);
+		const auto step = _frameWidth * span / strip.width();
+		if (step <= 0.) {
+			return;
+		}
+		auto index = int(std::floor(from / step));
+		while (true) {
+			const auto start = index * step;
+			if (start >= till) {
+				break;
+			}
+			const auto x = strip.x() + int(base::SafeRound(
+				(start - from) * strip.width() / span));
+			const auto frame = std::clamp(
+				int((start + step / 2.) * count / _duration),
+				0,
+				count - 1);
+			if (!_frames[frame].isNull()) {
+				p.drawImage(
+					QRect(x, strip.y(), _frameWidth, strip.height()),
+					_frames[frame]);
+			}
+			++index;
+		}
+		return;
+	}
 	for (auto i = 0; i != count; ++i) {
 		const auto &frame = _frames[i];
 		if (frame.isNull()) {

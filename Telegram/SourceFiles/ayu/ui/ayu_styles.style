@@ -126,7 +126,13 @@ ayuServiceTimeBadgeTrailingInset: 3px;
 ayuServiceTimeBadgeLastLineWidthAdd: 9px;
 
 ayuTopBarCalendar: IconButton(topBarSearch) {
-	icon: icon {{ "dialogs/dialogs_calendar", menuIconFg }};
-	iconOver: icon {{ "dialogs/dialogs_calendar", menuIconFgOver }};
-	iconPosition: point(9px, 16px);
+	icon: icon {{ "menu/calendar", menuIconFg }};
+	iconOver: icon {{ "menu/calendar", menuIconFgOver }};
+	iconPosition: point(8px, 15px);
 }
+ayuTopBarFilter: IconButton(topBarSearch) {
+	icon: icon {{ "menu/tag_filter", menuIconFg }};
+	iconOver: icon {{ "menu/tag_filter", menuIconFgOver }};
+	iconPosition: point(8px, 15px);
+}
+ayuTopBarFilterActiveIcon: icon {{ "menu/tag_filter", windowActiveTextFg }};

@@ -45,6 +45,7 @@
 #include "main/main_session_settings.h"
 #include "styles/style_chat.h"
 #include "styles/style_menu_icons.h"
+#include "ui/basic_click_handlers.h"
 #include "ui/inactive_press.h"
 #include "ui/painter.h"
 #include "ui/ui_utility.h"
@@ -381,7 +382,7 @@ void InnerWidget::visibleTopBottomUpdated(
 }
 
 void InnerWidget::updateVisibleTopItem() {
-	if (_visibleBottom == height()) {
+	if (_visibleBottom == height() && _downLoaded && !_jumpPending) {
 		_visibleTopItem = nullptr;
 	} else {
 		auto begin = std::rbegin(_items), end = std::rend(_items);
@@ -653,6 +654,7 @@ bool InnerWidget::elementHideTopicButton(not_null<const Element*> view) {
 }
 
 void InnerWidget::saveState(not_null<SectionMemento*> memento) {
+	clearGlobalPointers();
 	if (!_item) {
 		memento->setItems({}, {}, false, true);
 		memento->setSearchQuery(base::take(_searchQuery));
@@ -706,6 +708,48 @@ void InnerWidget::restoreState(not_null<SectionMemento*> memento) {
 	updateSize();
 }
 
+void InnerWidget::resetItems() {
+	clearGlobalPointers();
+	_items.clear();
+	_messageIds.clear();
+	_itemsByData.clear();
+	_itemDates.clear();
+	_realIds.clear();
+}
+
+void InnerWidget::clearGlobalPointers() {
+	_menu = nullptr;
+	_visibleTopItem = nullptr;
+	_scrollDateLastItem = nullptr;
+	_scrollDateLastItemTop = 0;
+	_mouseActionItem = nullptr;
+	_selectedItem = nullptr;
+	_mouseAction = MouseAction::None;
+	for (const auto &item : _items) {
+		const auto view = item.get();
+		if (Element::Hovered() == view) {
+			Element::Hovered(nullptr);
+		}
+		if (Element::Pressed() == view) {
+			Element::Pressed(nullptr);
+		}
+		if (Element::Moused() == view) {
+			Element::Moused(nullptr);
+		}
+		if (Element::HoveredLink() == view) {
+			Element::HoveredLink(nullptr);
+		}
+		if (Element::PressedLink() == view) {
+			Element::PressedLink(nullptr);
+		}
+		ClickHandler::clearActive(view);
+	}
+}
+
+rpl::producer<QDate> InnerWidget::calendarRequests() const {
+	return _calendarRequests.events();
+}
+
 void InnerWidget::applySearch(const QString &query) {
 	if (_item) {
 		return;
@@ -718,15 +762,52 @@ void InnerWidget::applySearch(const QString &query) {
 		_searchQuery = query;
 		_upLoaded = false;
 		_downLoaded = true;
-		_items.clear();
-		_messageIds.clear();
-		_itemsByData.clear();
-		_itemDates.clear();
+		_jumpPending = false;
+		resetItems();
 		updateMinMaxIds();
 		updateEmptyText();
 		updateSize();
 		preloadMore(Direction::Up);
 	}
+}
+
+void InnerWidget::applyFilter(AyuMessages::DeletedFilter filter) {
+	if (_item || _filter == filter) {
+		return;
+	}
+	++_loadRequestNum;
+	_loadingUp = false;
+	_loadingDown = false;
+	_filter = filter;
+	_upLoaded = false;
+	_downLoaded = true;
+	_jumpPending = false;
+	resetItems();
+	updateMinMaxIds();
+	updateEmptyText();
+	updateSize();
+	preloadMore(Direction::Up);
+}
+
+bool InnerWidget::downLoaded() const {
+	return _downLoaded && !_jumpPending;
+}
+
+void InnerWidget::jumpToLatest() {
+	if (_item) {
+		return;
+	}
+	++_loadRequestNum;
+	_loadingUp = false;
+	_loadingDown = false;
+	_jumpPending = false;
+	_upLoaded = false;
+	_downLoaded = true;
+	resetItems();
+	updateMinMaxIds();
+	updateEmptyText();
+	updateSize();
+	preloadMore(Direction::Up);
 }
 
 void InnerWidget::jumpToDate(const QDate &date) {
@@ -754,16 +835,15 @@ void InnerWidget::jumpToDate(const QDate &date) {
 			if (!id) {
 				return;
 			}
+			++_loadRequestNum;
 			_loadingUp = false;
 			_loadingDown = false;
-			_items.clear();
-			_messageIds.clear();
-			_itemsByData.clear();
-			_itemDates.clear();
+			resetItems();
 			_minId = id + 1;
 			_maxId = id;
 			_upLoaded = false;
-			_downLoaded = false;
+			_downLoaded = true;
+			_jumpPending = true;
 			updateEmptyText();
 			updateSize();
 			preloadMore(Direction::Up);
@@ -785,12 +865,13 @@ void InnerWidget::preloadMore(Direction direction) {
 	const auto minId = (direction == Direction::Up) ? 0 : _maxId;
 	const auto perPage = _items.empty() ? kMessagesFirstPage : kMessagesPerPage;
 
-	const auto reqNum = ++_loadRequestNum;
+	const auto reqNum = _loadRequestNum;
 
 	const auto item = _item;
 	const auto peer = _peer;
 	const auto topicId = _topicId;
 	const auto searchQuery = _searchQuery;
+	const auto filter = _filter;
 
 	const auto weak = base::make_weak(this);
 
@@ -799,7 +880,7 @@ void InnerWidget::preloadMore(Direction direction) {
 		if (item) { // viewing edited history
 			messages = AyuMessages::getEditedMessages(item, minId, maxId, perPage);
 		} else { // viewing deleted messages
-			messages = AyuMessages::getDeletedMessages(peer, topicId, minId, maxId, perPage, searchQuery);
+			messages = AyuMessages::getDeletedMessages(peer, topicId, minId, maxId, perPage, searchQuery, filter);
 		}
 
 		crl::on_main([=, messages = std::move(messages)]() mutable
@@ -816,6 +897,12 @@ void InnerWidget::preloadMore(Direction direction) {
 			loadingFlagRef = false;
 
 			addMessages(direction, messages);
+			if (direction == Direction::Up && _jumpPending) {
+				_jumpPending = false;
+				_downLoaded = false;
+				updateVisibleTopItem();
+				checkPreloadMore();
+			}
 		});
 	});
 }
@@ -853,6 +940,9 @@ void InnerWidget::addMessages(Direction direction, const std::vector<AyuMessageB
 			if (sentDate) {
 				_itemDates.emplace(item->data(), sentDate);
 			}
+			if (realId) {
+				_realIds.emplace(item->data(), realId);
+			}
 			_messageIds.emplace(id);
 			_itemsByData.emplace(item->data(), item.get());
 			addToItems.push_back(std::move(item));
@@ -862,6 +952,7 @@ void InnerWidget::addMessages(Direction direction, const std::vector<AyuMessageB
 			this,
 			_history,
 			message,
+			!_item,
 			addOne);
 		if (count > 1) {
 			// Reverse the inner order of the added messages, because we load messages
@@ -1333,6 +1424,13 @@ void InnerWidget::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 				}
 			}
 		}
+		if (view) {
+			const auto original = not_null<const HistoryItem*>(view->data());
+			_menu->addAction(
+				tr::lng_context_to_msg(tr::now),
+				[=] { showOriginal(original); },
+				&st::menuIconShowInChat);
+		}
 	} else if (fromId) {
 		// suggest to block
 		//		if (const auto participant = session().data().peer(fromId)) {
@@ -1382,6 +1480,14 @@ void InnerWidget::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 			}
 		}
 
+		if (item) {
+			const auto original = not_null<const HistoryItem*>(item);
+			_menu->addAction(
+				tr::lng_context_to_msg(tr::now),
+				[=] { showOriginal(original); },
+				&st::menuIconShowInChat);
+		}
+
 		const auto actionText = link
 									? link->copyToClipboardContextItemText()
 									: QString();
@@ -1402,6 +1508,26 @@ void InnerWidget::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		_menu->popup(e->globalPos());
 		e->accept();
 	}
+}
+
+void InnerWidget::showOriginal(not_null<const HistoryItem*> item) {
+	const auto i = _realIds.find(item);
+	const auto id = (i != end(_realIds))
+		? i->second
+		: _item
+		? _item->id
+		: MsgId();
+	if (!id) {
+		return;
+	}
+	const auto controller = _controller;
+	const auto peerId = _peer->id;
+	crl::on_main(this, [=] {
+		controller->showPeerHistory(
+			peerId,
+			Window::SectionShow::Way::Forward,
+			id);
+	});
 }
 
 void InnerWidget::savePhotoToFile(not_null<PhotoData*> photo) {
@@ -1650,7 +1776,7 @@ void InnerWidget::mouseActionFinish(const QPoint &screenPos, Qt::MouseButton but
 	_mouseAction = MouseAction::None;
 	_mouseActionItem = nullptr;
 	_mouseSelectType = TextSelectType::Letters;
-	//_widget->noSelectingScroll(); // TODO
+
 
 	if (QGuiApplication::clipboard()->supportsSelection()
 		&& _selectedItem
@@ -1723,6 +1849,46 @@ void InnerWidget::updateSelected() {
 		}
 		dragState = view->textState(itemPoint, request);
 		lnkhost = view;
+		if (!dragState.link) {
+			const auto dateHeight = st::msgServicePadding.bottom()
+				+ st::msgServiceFont->height
+				+ st::msgServicePadding.top();
+			const auto dateMargin = st::msgServiceMargin.top();
+			auto dateView = (Element*)nullptr;
+			if (view->displayDate()
+				&& itemPoint.y() >= dateMargin
+				&& itemPoint.y() < dateMargin + dateHeight) {
+				dateView = view;
+			} else if (_visibleTopItem
+				&& _scrollDateOpacity.value(_scrollDateShown ? 1. : 0.) > 0.
+				&& point.y() >= _visibleTop + dateMargin
+				&& point.y() < _visibleTop + dateMargin + dateHeight) {
+				dateView = _visibleTopItem;
+			}
+			if (dateView) {
+				const auto date = dateView->dateTime().date();
+				const auto dateWidth = st::msgServiceFont->width(
+						langDayOfMonthFull(date))
+					+ st::msgServicePadding.left()
+					+ st::msgServicePadding.right();
+				const auto dateLeft = (width() - dateWidth) / 2;
+				if (point.x() >= dateLeft
+					&& point.x() < dateLeft + dateWidth) {
+					_dateLinkDate = date;
+					if (!_dateLink) {
+						const auto weak = base::make_weak(this);
+						_dateLink = std::make_shared<LambdaClickHandler>([=] {
+							if (const auto strong = weak.get()) {
+								strong->_calendarRequests.fire_copy(
+									strong->_dateLinkDate);
+							}
+						});
+					}
+					dragState = TextState(nullptr, _dateLink);
+					lnkhost = dateView;
+				}
+			}
+		}
 		if (!dragState.link && itemPoint.x() >= st::historyPhotoLeft
 			&& itemPoint.x() < st::historyPhotoLeft + st::msgPhotoSize) {
 			if (!item->isService() && view->hasFromPhoto()) {
@@ -1846,6 +2012,8 @@ QPoint InnerWidget::mapPointToItem(QPoint point, const Element *view) const {
 	return point - QPoint(0, itemTop(view));
 }
 
-InnerWidget::~InnerWidget() = default;
+InnerWidget::~InnerWidget() {
+	clearGlobalPointers();
+}
 
 } // namespace MessageHistory

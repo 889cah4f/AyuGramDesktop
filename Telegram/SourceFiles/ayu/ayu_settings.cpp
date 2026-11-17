@@ -1133,6 +1133,36 @@ void AyuSettings::removeDeletedExcludedDialog(int64 dialogId) {
 	}
 }
 
+void AyuSettings::addGhostExcludedDialog(int64 dialogId) {
+	if (_ghostExcludedDialogs.insert(dialogId).second) {
+		save();
+	}
+}
+
+void AyuSettings::removeGhostExcludedDialog(int64 dialogId) {
+	if (_ghostExcludedDialogs.erase(dialogId) > 0) {
+		save();
+	}
+}
+
+void AyuSettings::addFirstMessageOnlyDialog(int64 dialogId) {
+	if (_firstMessageOnlyDialogs.insert(dialogId).second) {
+		save();
+	}
+}
+
+void AyuSettings::removeFirstMessageOnlyDialog(int64 dialogId) {
+	if (_firstMessageOnlyDialogs.erase(dialogId) > 0) {
+		save();
+	}
+}
+
+void AyuSettings::setHideJoinMessages(bool val) {
+	if (_hideJoinMessages.current() == val) return;
+	_hideJoinMessages = val;
+	save();
+}
+
 void AyuSettings::setSaveDeletedInChannels(bool val) {
 	if (_saveDeletedInChannels.current() == val) return;
 	_saveDeletedInChannels = val;
@@ -1142,6 +1172,48 @@ void AyuSettings::setSaveDeletedInChannels(bool val) {
 void AyuSettings::setSaveDeletedInComments(bool val) {
 	if (_saveDeletedInComments.current() == val) return;
 	_saveDeletedInComments = val;
+	save();
+}
+
+void AyuSettings::setSaveDeletedPhotos(bool val) {
+	if (_saveDeletedPhotos.current() == val) return;
+	_saveDeletedPhotos = val;
+	save();
+}
+
+void AyuSettings::setSaveDeletedVideos(bool val) {
+	if (_saveDeletedVideos.current() == val) return;
+	_saveDeletedVideos = val;
+	save();
+}
+
+void AyuSettings::setSaveDeletedVoices(bool val) {
+	if (_saveDeletedVoices.current() == val) return;
+	_saveDeletedVoices = val;
+	save();
+}
+
+void AyuSettings::setSaveDeletedRounds(bool val) {
+	if (_saveDeletedRounds.current() == val) return;
+	_saveDeletedRounds = val;
+	save();
+}
+
+void AyuSettings::setSaveDeletedGifs(bool val) {
+	if (_saveDeletedGifs.current() == val) return;
+	_saveDeletedGifs = val;
+	save();
+}
+
+void AyuSettings::setSaveDeletedStickers(bool val) {
+	if (_saveDeletedStickers.current() == val) return;
+	_saveDeletedStickers = val;
+	save();
+}
+
+void AyuSettings::setSaveDeletedFiles(bool val) {
+	if (_saveDeletedFiles.current() == val) return;
+	_saveDeletedFiles = val;
 	save();
 }
 
@@ -1254,6 +1326,7 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 		{"filtersEnabled", s._filtersEnabled.current()},
 		{"filtersEnabledInChats", s._filtersEnabledInChats.current()},
 		{"hideFromBlocked", s._hideFromBlocked.current()},
+		{"hideJoinMessages", s._hideJoinMessages.current()},
 		{"semiTransparentDeletedMessages", s._semiTransparentDeletedMessages.current()},
 		{"disableAds", s._disableAds.current()},
 		{"disableStories", s._disableStories.current()},
@@ -1336,7 +1409,16 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 		{"streamerMode", s._streamerMode.current()},
 		{"saveDeletedInChannels", s._saveDeletedInChannels.current()},
 		{"saveDeletedInComments", s._saveDeletedInComments.current()},
+		{"saveDeletedPhotos", s._saveDeletedPhotos.current()},
+		{"saveDeletedVideos", s._saveDeletedVideos.current()},
+		{"saveDeletedVoices", s._saveDeletedVoices.current()},
+		{"saveDeletedRounds", s._saveDeletedRounds.current()},
+		{"saveDeletedGifs", s._saveDeletedGifs.current()},
+		{"saveDeletedStickers", s._saveDeletedStickers.current()},
+		{"saveDeletedFiles", s._saveDeletedFiles.current()},
 		{"deletedExcludedDialogs", s._deletedExcludedDialogs},
+		{"ghostExcludedDialogs", s._ghostExcludedDialogs},
+		{"firstMessageOnlyDialogs", s._firstMessageOnlyDialogs},
 		{"hideWalletInDrawer", s._hideWalletInDrawer.current()},
 		{"customAppName", s._customAppName.current()},
 		{"roundVideoSize", s._roundVideoSize.current()},
@@ -1370,6 +1452,7 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 	s._filtersEnabled = j.value("filtersEnabled", defaults._filtersEnabled.current());
 	s._filtersEnabledInChats = j.value("filtersEnabledInChats", defaults._filtersEnabledInChats.current());
 	s._hideFromBlocked = j.value("hideFromBlocked", defaults._hideFromBlocked.current());
+	s._hideJoinMessages = j.value("hideJoinMessages", defaults._hideJoinMessages.current());
 	s._semiTransparentDeletedMessages = j.value("semiTransparentDeletedMessages", defaults._semiTransparentDeletedMessages.current());
 	s._disableAds = j.value("disableAds", defaults._disableAds.current());
 	s._disableStories = j.value("disableStories", defaults._disableStories.current());
@@ -1452,7 +1535,16 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 	s._streamerMode = j.value("streamerMode", defaults._streamerMode.current());
 	s._saveDeletedInChannels = j.value("saveDeletedInChannels", defaults._saveDeletedInChannels.current());
 	s._saveDeletedInComments = j.value("saveDeletedInComments", defaults._saveDeletedInComments.current());
+	s._saveDeletedPhotos = j.value("saveDeletedPhotos", defaults._saveDeletedPhotos.current());
+	s._saveDeletedVideos = j.value("saveDeletedVideos", defaults._saveDeletedVideos.current());
+	s._saveDeletedVoices = j.value("saveDeletedVoices", defaults._saveDeletedVoices.current());
+	s._saveDeletedRounds = j.value("saveDeletedRounds", defaults._saveDeletedRounds.current());
+	s._saveDeletedGifs = j.value("saveDeletedGifs", defaults._saveDeletedGifs.current());
+	s._saveDeletedStickers = j.value("saveDeletedStickers", defaults._saveDeletedStickers.current());
+	s._saveDeletedFiles = j.value("saveDeletedFiles", defaults._saveDeletedFiles.current());
 	s._deletedExcludedDialogs = j.value("deletedExcludedDialogs", defaults._deletedExcludedDialogs);
+	s._ghostExcludedDialogs = j.value("ghostExcludedDialogs", defaults._ghostExcludedDialogs);
+	s._firstMessageOnlyDialogs = j.value("firstMessageOnlyDialogs", defaults._firstMessageOnlyDialogs);
 	s._hideWalletInDrawer = j.value("hideWalletInDrawer", defaults._hideWalletInDrawer.current());
 	s._customAppName = j.value("customAppName", defaults._customAppName.current());
 	s._roundVideoSize = std::clamp(j.value("roundVideoSize", defaults._roundVideoSize.current()), 100, 300);

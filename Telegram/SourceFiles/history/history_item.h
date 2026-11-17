@@ -654,6 +654,7 @@ public:
 
 	void updateDate(TimeId newDate);
 	[[nodiscard]] bool canUpdateDate() const;
+	void applyServerDate(TimeId date);
 	void customEmojiRepaint();
 	void setMediaForInstantView(
 		QString url,

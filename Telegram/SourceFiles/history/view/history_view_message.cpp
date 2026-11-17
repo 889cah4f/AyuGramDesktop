@@ -2990,6 +2990,15 @@ void Message::paintForwardedInfo(
 			.elisionLines = 2,
 			.elisionBreakEverywhere = breakEverywhere,
 		});
+		if (AyuFeatures::MessageShot::ShouldBlurNames()) {
+			AyuFeatures::MessageShot::BlurPaintedRegion(
+				p,
+				QRect(
+					trect.x(),
+					trect.y(),
+					std::min(useWidth, forwarded->text.maxWidth()),
+					std::min(countedHeight, 2 * serviceFont->height)));
+		}
 		if (recomputeHidden) {
 			hiddenTooltip->cachedWidth = useWidth;
 			if (!hiddenSenderRange.empty() && !highlightPath.isEmpty()) {

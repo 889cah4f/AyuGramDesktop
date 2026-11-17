@@ -28,6 +28,10 @@
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/widgets/shadow.h"
+#include "ui/controls/jump_down_button.h"
+#include "ui/widgets/popup_menu.h"
+#include "styles/style_menu_icons.h"
+#include "styles/style_ayu_icons.h"
 #include "window/window_adaptive.h"
 #include "window/window_session_controller.h"
 #include "window/themes/window_theme.h"
@@ -46,6 +50,8 @@ public:
 	[[nodiscard]] rpl::producer<> searchCancelRequests() const;
 	[[nodiscard]] rpl::producer<QString> searchRequests() const;
 	[[nodiscard]] rpl::producer<QDate> jumpToDateRequests() const;
+	[[nodiscard]] rpl::producer<AyuMessages::DeletedFilter> filterRequests() const;
+	void showCalendar(QDate highlighted);
 
 	// When animating mode is enabled the content is hidden and the
 	// whole fixed bar acts like a back button.
@@ -72,6 +78,8 @@ private:
 	void searchUpdated();
 	void applySearch();
 	void searchAnimationCallback();
+	void showFilterMenu();
+	void setFilter(AyuMessages::DeletedFilter filter);
 
 	not_null<Window::SessionController*> _controller;
 	not_null<PeerData*> _peer;
@@ -79,7 +87,10 @@ private:
 	object_ptr<Profile::BackButton> _backButton;
 	object_ptr<Ui::IconButton> _search;
 	object_ptr<Ui::IconButton> _calendar;
+	object_ptr<Ui::IconButton> _filter;
 	object_ptr<Ui::CrossButton> _cancel;
+	base::unique_qptr<Ui::PopupMenu> _filterMenu;
+	AyuMessages::DeletedFilter _currentFilter = AyuMessages::DeletedFilter::All;
 
 	Ui::Animations::Simple _searchShownAnimation;
 	bool _searchShown = false;
@@ -90,6 +101,7 @@ private:
 	rpl::event_stream<> _searchCancelRequests;
 	rpl::event_stream<QString> _searchRequests;
 	rpl::event_stream<QDate> _jumpToDateRequests;
+	rpl::event_stream<AyuMessages::DeletedFilter> _filterRequests;
 };
 
 object_ptr<Window::SectionWidget> SectionMemento::createWidget(
@@ -116,26 +128,19 @@ FixedBar::FixedBar(
 , _backButton(this)
 , _search(this, st::topBarSearch)
 , _calendar(this, st::ayuTopBarCalendar)
+, _filter(this, st::ayuTopBarFilter)
 , _cancel(this, st::historyAdminLogCancelSearch)
 , _searchEnabled(searchEnabled) {
 	_backButton->moveToLeft(0, 0);
 	_backButton->setClickedCallback([=] { goBack(); });
 	_search->setClickedCallback([=] { showSearch(); });
 	_calendar->setClickedCallback([=] {
-		const auto today = QDate::currentDate();
-		_controller->show(Box<Ui::CalendarBox>(Ui::CalendarBoxArgs{
-			.month = today,
-			.highlighted = today,
-			.callback = [=](const QDate &date, Fn<void()> close) {
-				_jumpToDateRequests.fire_copy(date);
-				close();
-			},
-			.minDate = QDate(2013, 8, 1),
-			.maxDate = today,
-		}));
+		showCalendar(QDate::currentDate());
 	});
+	_filter->setClickedCallback([=] { showFilterMenu(); });
 	if (!_searchEnabled) {
 		_calendar->hide();
+		_filter->hide();
 	}
 	_cancel->setClickedCallback([=] { cancelSearch(); });
 	_field->hide();
@@ -237,8 +242,61 @@ rpl::producer<QString> FixedBar::searchRequests() const {
 	return _searchRequests.events();
 }
 
+void FixedBar::showCalendar(QDate highlighted) {
+	const auto today = QDate::currentDate();
+	_controller->show(Box<Ui::CalendarBox>(Ui::CalendarBoxArgs{
+		.month = highlighted,
+		.highlighted = highlighted,
+		.callback = [=](const QDate &date, Fn<void()> close) {
+			_jumpToDateRequests.fire_copy(date);
+			close();
+		},
+		.minDate = QDate(2013, 8, 1),
+		.maxDate = today,
+	}));
+}
+
 rpl::producer<QDate> FixedBar::jumpToDateRequests() const {
 	return _jumpToDateRequests.events();
+}
+
+rpl::producer<AyuMessages::DeletedFilter> FixedBar::filterRequests() const {
+	return _filterRequests.events();
+}
+
+void FixedBar::showFilterMenu() {
+	using Filter = AyuMessages::DeletedFilter;
+	_filterMenu = base::make_unique_q<Ui::PopupMenu>(
+		this,
+		st::popupMenuWithIcons);
+	const auto add = [&](
+			Filter filter,
+			const QString &text,
+			const style::icon *icon) {
+		_filterMenu->addAction(
+			text,
+			[=] { setFilter(filter); },
+			(filter == _currentFilter) ? &st::menuIconSelect : icon);
+	};
+	add(Filter::All, tr::lng_filters_all_short(tr::now), &st::menuIconShowAll);
+	add(Filter::Media, tr::lng_media_type_media(tr::now), &st::menuIconPhoto);
+	add(Filter::Gifs, tr::lng_media_type_gifs(tr::now), &st::menuIconGif);
+	add(Filter::Voice, tr::lng_media_type_audios(tr::now), &st::messageFieldVoiceIcon);
+	add(Filter::Rounds, tr::lng_media_type_rounds(tr::now), &st::menuIconVideoChat);
+	add(Filter::Files, tr::lng_media_type_files(tr::now), &st::menuIconFile);
+	_filterMenu->popup(QCursor::pos());
+}
+
+void FixedBar::setFilter(AyuMessages::DeletedFilter filter) {
+	if (_currentFilter == filter) {
+		return;
+	}
+	_currentFilter = filter;
+	const auto active = (filter != AyuMessages::DeletedFilter::All);
+	_filter->setIconOverride(
+		active ? &st::ayuTopBarFilterActiveIcon : nullptr,
+		active ? &st::ayuTopBarFilterActiveIcon : nullptr);
+	_filterRequests.fire_copy(filter);
 }
 
 int FixedBar::resizeGetHeight(int newWidth) {
@@ -258,6 +316,8 @@ int FixedBar::resizeGetHeight(int newWidth) {
 		_search->moveToLeft(searchCurrentLeft, 0);
 		_calendar->moveToLeft(searchHiddenLeft - _calendar->width() + st::lineWidth, 0);
 		_calendar->setVisible(!_searchShown);
+		_filter->moveToLeft(_calendar->x() - _filter->width() + st::lineWidth, 0);
+		_filter->setVisible(!_searchShown);
 	}
 	_backButton->setOpacity(1. - searchShown);
 	_backButton->resizeToWidth(searchCurrentLeft);
@@ -291,6 +351,8 @@ void FixedBar::setAnimatingMode(bool enabled) {
 			_cancel->setVisible(false);
 			if (!_searchEnabled) {
 				_search->hide();
+				_calendar->hide();
+				_filter->hide();
 			}
 		}
 		show();
@@ -323,7 +385,8 @@ Widget::Widget(
 	  _fixedBar(this, controller, peer, !item),
 	  _fixedBarShadow(this),
 	  _item(item),
-	  _topicId(topicId) {
+	  _topicId(topicId),
+	  _scrollDown(_scroll, st::historyToDown) {
 	_fixedBar->move(0, 0);
 	_fixedBar->resizeToWidth(width());
 	_fixedBar->searchCancelRequests(
@@ -338,6 +401,10 @@ Widget::Widget(
 	) | rpl::on_next([=](const QDate &date) {
 		_inner->jumpToDate(date);
 	}, lifetime());
+	_fixedBar->filterRequests(
+	) | rpl::on_next([=](AyuMessages::DeletedFilter filter) {
+		_inner->applyFilter(filter);
+	}, lifetime());
 	_fixedBar->show();
 
 	_fixedBarShadow->raise();
@@ -350,6 +417,10 @@ Widget::Widget(
 							 lifetime());
 
 	_inner = _scroll->setOwnedWidget(object_ptr<InnerWidget>(this, controller, peer, item, topicId));
+	_inner->calendarRequests(
+	) | rpl::on_next([=](const QDate &date) {
+		_fixedBar->showCalendar(date);
+	}, lifetime());
 	_inner->scrollToSignal(
 	) | rpl::on_next([=](int top)
 							 {
@@ -367,6 +438,82 @@ Widget::Widget(
 							 lifetime());
 
 	setupShortcuts();
+	setupScrollDownButton();
+}
+
+void Widget::setupScrollDownButton() {
+	_scrollDown->setClickedCallback([=] { scrollDownClicked(); });
+	updateScrollDownVisibility();
+}
+
+void Widget::scrollDownClicked() {
+	if (!_inner->downLoaded()) {
+		_scrollToAnimation.stop();
+		_inner->jumpToLatest();
+		return;
+	}
+	const auto scrollTo = _scroll->scrollTopMax();
+	auto scrollTop = _scroll->scrollTop();
+	if (scrollTop == scrollTo) {
+		_scrollToAnimation.stop();
+		return;
+	}
+	const auto maxAnimatedDelta = _scroll->height();
+	auto transition = anim::sineInOut;
+	if (scrollTo > scrollTop + maxAnimatedDelta) {
+		scrollTop = scrollTo - maxAnimatedDelta;
+		_scroll->scrollToY(scrollTop);
+		transition = anim::easeOutCubic;
+	}
+	_scrollToAnimation.stop();
+	_scrollToAnimation.start(
+		[=] { scrollToAnimationCallback(); },
+		scrollTop,
+		scrollTo,
+		st::slideDuration,
+		transition);
+}
+
+void Widget::scrollToAnimationCallback() {
+	const auto scrollTo = _scroll->scrollTopMax();
+	const auto value = _scrollToAnimation.value(scrollTo);
+	_scroll->scrollToY(int(base::SafeRound(value)));
+}
+
+void Widget::updateScrollDownVisibility() {
+	if (_scroll->isHidden() || !_inner) {
+		return;
+	}
+	const auto top = _scroll->scrollTop() + st::historyToDownShownAfter / 4;
+	startScrollDownButtonAnimation(!_inner->downLoaded()
+		|| top < _scroll->scrollTopMax());
+}
+
+void Widget::startScrollDownButtonAnimation(bool shown) {
+	if (_scrollDownIsShown == shown) {
+		return;
+	}
+	_scrollDownIsShown = shown;
+	_scrollDownShown.start(
+		[=] { updateScrollDownPosition(); },
+		_scrollDownIsShown ? 0. : 1.,
+		_scrollDownIsShown ? 1. : 0.,
+		st::historyToDownDuration);
+}
+
+void Widget::updateScrollDownPosition() {
+	const auto top = anim::interpolate(
+		0,
+		_scrollDown->height() + st::historyToDownPosition.y(),
+		_scrollDownShown.value(_scrollDownIsShown ? 1. : 0.));
+	_scrollDown->moveToRight(
+		st::historyToDownPosition.x(),
+		_scroll->height() - top);
+	const auto shouldBeHidden
+		= !_scrollDownIsShown && !_scrollDownShown.animating();
+	if (shouldBeHidden != _scrollDown->isHidden()) {
+		_scrollDown->setVisible(!shouldBeHidden);
+	}
 }
 
 void Widget::updateAdaptiveLayout() {
@@ -481,6 +628,7 @@ void Widget::resizeEvent(QResizeEvent *e) {
 		auto scrollTop = _scroll->scrollTop();
 		_inner->setVisibleTopBottom(scrollTop, scrollTop + _scroll->height());
 	}
+	updateScrollDownPosition();
 }
 
 void Widget::paintEvent(QPaintEvent *e) {
@@ -504,6 +652,7 @@ void Widget::paintEvent(QPaintEvent *e) {
 void Widget::onScroll() {
 	int scrollTop = _scroll->scrollTop();
 	_inner->setVisibleTopBottom(scrollTop, scrollTop + _scroll->height());
+	updateScrollDownVisibility();
 }
 
 void Widget::showAnimatedHook(

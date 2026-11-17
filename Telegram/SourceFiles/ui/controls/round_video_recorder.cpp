@@ -1274,8 +1274,23 @@ void RoundVideoRecorder::createImages() {
 	sp.end();
 }
 
+rpl::producer<> RoundVideoRecorder::previewClicks() const {
+	return _previewClicks.events();
+}
+
 void RoundVideoRecorder::setup() {
 	const auto raw = _preview.get();
+
+	raw->events(
+	) | rpl::filter([=](not_null<QEvent*> e) {
+		return (e->type() == QEvent::MouseButtonRelease)
+			&& (static_cast<QMouseEvent*>(e.get())->button()
+				== Qt::LeftButton)
+			&& _paused
+			&& (_silentPreview != nullptr);
+	}) | rpl::on_next([=] {
+		_previewClicks.fire({});
+	}, raw->lifetime());
 
 	_side = style::ConvertScale(kSide * 3 / 4);
 	_progressStroke = st::radialLine;
@@ -1485,11 +1500,21 @@ void RoundVideoRecorder::pause(Fn<void(RoundVideoResult)> done) {
 void RoundVideoRecorder::showPreview(
 		std::shared_ptr<Ui::DynamicImage> silent,
 		std::shared_ptr<Ui::DynamicImage> sounded) {
+	const auto replacing = (_silentPreview != nullptr);
+	if (replacing) {
+		_silentPreview->subscribeToUpdates(nullptr);
+		if (_soundedPreview) {
+			_soundedPreview->subscribeToUpdates(nullptr);
+		}
+	}
 	_silentPreview = std::move(silent);
 	_soundedPreview = std::move(sounded);
 	_silentPreview->subscribeToUpdates(updater());
 	_soundedPreview->subscribeToUpdates(updater());
-	_fadePreviewAnimation.start(updater(), 0., 1., kFadeDuration);
+	if (!replacing) {
+		_fadePreviewAnimation.start(updater(), 0., 1., kFadeDuration);
+	}
+	_preview->setCursor(style::cur_pointer);
 	_preview->update();
 }
 
@@ -1501,6 +1526,7 @@ void RoundVideoRecorder::resume(RoundVideoPartial partial) {
 		that.restart(std::move(partial));
 	});
 	_paused = false;
+	_preview->setCursor(style::cur_default);
 	_cachedPreviewFrame = lookupPreviewFrame();
 	if (const auto preview = base::take(_silentPreview)) {
 		preview->subscribeToUpdates(nullptr);

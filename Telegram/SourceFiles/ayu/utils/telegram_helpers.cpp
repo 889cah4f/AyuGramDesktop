@@ -293,8 +293,17 @@ Fn<void()> badgeClickHandler(not_null<PeerData*> peer) {
 	};
 }
 
+bool isGhostExcluded(not_null<PeerData*> peer) {
+	return AyuSettings::getInstance().isGhostExcluded(getDialogIdFromPeer(peer));
+}
+
 bool isMessageHidden(const not_null<HistoryItem*> item) {
 	if (AyuState::isHidden(item)) {
+		return true;
+	}
+	if (item->isService()
+		&& AyuSettings::getInstance().hideJoinMessages()
+		&& AyuState::isJoinMessage(item)) {
 		return true;
 	}
 
@@ -743,6 +752,9 @@ void processMessageDelete(not_null<HistoryItem*> item) {
 	if (!isMessageSavable(item)) {
 		item->destroy();
 	} else {
+		if (item->isDeleted()) {
+			return;
+		}
 		if (item->ttlDestroyAt() > 0) {
 			item->applyTTL(0);
 		}

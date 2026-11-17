@@ -353,17 +353,8 @@ MainMenu::MainMenu(
 , _footer(_inner->add(object_ptr<Ui::RpWidget>(_inner.get())))
 , _telegram(
 	Ui::CreateChild<Ui::FlatLabel>(_footer.get(), st::mainMenuTelegramLabel))
-, _version(AddVersionLabel(_footer))
-, _community(AyuBuild::IsCommunity()
-	? Ui::CreateChild<Ui::FlatLabel>(_footer.get(), st::mainMenuVersionLabel)
-	: nullptr) {
+, _version(AddVersionLabel(_footer)) {
 	setAttribute(Qt::WA_OpaquePaintEvent);
-	if (_community) {
-		_community->setMarkedText(tr::link(
-			AyuBuild::CommunityLabel(),
-			AyuBuild::AuthorLink()));
-		_community->setLinksTrusted();
-	}
 
 	setupUserpicButton();
 	setupAccountsToggle();
@@ -391,12 +382,8 @@ MainMenu::MainMenu(
 
 	_footer->heightValue(
 	) | rpl::on_next([=] {
-		const auto shift = _community ? _community->height() : 0;
-		_telegram->moveToLeft(st::mainMenuFooterLeft, _footer->height() - st::mainMenuTelegramBottom - _telegram->height() - shift);
-		_version->moveToLeft(st::mainMenuFooterLeft, _footer->height() - st::mainMenuVersionBottom - _version->height() - shift);
-		if (_community) {
-			_community->moveToLeft(st::mainMenuFooterLeft, _footer->height() - st::mainMenuVersionBottom - _community->height());
-		}
+		_telegram->moveToLeft(st::mainMenuFooterLeft, _footer->height() - st::mainMenuTelegramBottom - _telegram->height());
+		_version->moveToLeft(st::mainMenuFooterLeft, _footer->height() - st::mainMenuVersionBottom - _version->height());
 	}, _footer->lifetime());
 
 	rpl::combine(
@@ -422,6 +409,10 @@ MainMenu::MainMenu(
 					lt_version,
 					currentVersionShortText()),
 			1) // Link 1.
+		.append(AyuBuild::IsCommunity()
+			? TextWithEntities{ QString::fromUtf8(" by ") }.append(
+				tr::link(AyuBuild::Tag(), 3))
+			: TextWithEntities())
 		.append(QChar(' '))
 		.append(QChar(8211))
 		.append(QChar(' '))
@@ -434,6 +425,11 @@ MainMenu::MainMenu(
 		std::make_shared<LambdaClickHandler>([=] {
 			controller->show(Box(AboutBox, controller));
 		}));
+	if (AyuBuild::IsCommunity()) {
+		_version->setLink(
+			3,
+			std::make_shared<UrlClickHandler>(AyuBuild::AuthorLink()));
+	}
 
 	rpl::combine(
 		_toggleAccounts->rightSkipValue(),
@@ -978,7 +974,7 @@ void MainMenu::updateInnerControlsGeometry() {
 	const auto available = height() - st::mainMenuCoverHeight - contentHeight;
 	const auto footerHeight = std::max(
 		available,
-		st::mainMenuFooterHeightMin + (_community ? _community->height() : 0));
+		st::mainMenuFooterHeightMin);
 	if (_footer->height() != footerHeight) {
 		_footer->resize(_footer->width(), footerHeight);
 	}

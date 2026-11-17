@@ -26,6 +26,9 @@ enum class SavedMediaType {
 };
 
 void saveMediaForMessage(not_null<HistoryItem*> item, AyuMessageBase &message);
+void fetchDeletedMedia(
+	not_null<HistoryItem*> item,
+	const AyuMessageBase &message);
 
 [[nodiscard]] PhotoData *restorePhoto(
 	not_null<Main::Session*> session,

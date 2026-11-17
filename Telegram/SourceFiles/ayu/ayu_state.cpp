@@ -11,6 +11,7 @@
 namespace AyuState {
 
 std::unordered_map<PeerId, std::unordered_set<MsgId>> hiddenMessages;
+std::unordered_map<PeerId, std::unordered_set<MsgId>> joinMessages;
 Main::Session *disableGhostModeOnStoryCloseSession = nullptr;
 
 void hide(PeerId peerId, MsgId messageId) {
@@ -31,6 +32,15 @@ bool isHidden(PeerId peerId, MsgId messageId) {
 
 bool isHidden(not_null<HistoryItem*> item) {
 	return isHidden(item->history()->peer->id, item->id);
+}
+
+void markJoinMessage(PeerId peerId, MsgId messageId) {
+	joinMessages[peerId].insert(messageId);
+}
+
+bool isJoinMessage(not_null<HistoryItem*> item) {
+	const auto it = joinMessages.find(item->history()->peer->id);
+	return (it != joinMessages.end()) && it->second.contains(item->id);
 }
 
 void setDisableGhostModeOnStoryClose(Main::Session *session) {
