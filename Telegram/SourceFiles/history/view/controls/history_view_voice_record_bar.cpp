@@ -31,6 +31,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/player/media_player_button.h"
 #include "media/player/media_player_instance.h"
 #include "media/streaming/media_streaming_instance.h"
+#include "media/streaming/media_streaming_document.h"
+#include "media/streaming/media_streaming_loader_local.h"
+#include "media/streaming/media_streaming_player.h"
 #include "media/streaming/media_streaming_round_preview.h"
 #include "storage/storage_account.h"
 #include "ui/controls/round_video_recorder.h"
@@ -76,12 +79,126 @@ constexpr auto kLockArcAngle = 15.;
 
 constexpr auto kHideWaveformBgOffset = 50;
 constexpr auto kTrimPlaybackEpsilon = 0.0001;
+constexpr auto kPauseAfterStartDelay = crl::time(800);
 
 enum class FilterType {
 	Continue,
 	ShowBox,
 	Cancel,
 };
+
+class RangeRoundPreview final : public Ui::DynamicImage {
+public:
+	explicit RangeRoundPreview(const QByteArray &bytes);
+
+	std::shared_ptr<DynamicImage> clone() override;
+	QImage image(int size) override;
+	void subscribeToUpdates(Fn<void()> callback) override;
+
+	void setRange(crl::time from, crl::time till);
+
+private:
+	void restart();
+	void repaint();
+
+	std::unique_ptr<::Media::Streaming::Instance> _instance;
+	QImage _roundingMask;
+	Fn<void()> _repaint;
+	crl::time _from = 0;
+	crl::time _till = 0;
+	bool _failed = false;
+
+};
+
+RangeRoundPreview::RangeRoundPreview(const QByteArray &bytes) {
+	using namespace ::Media::Streaming;
+	auto loader = MakeBytesLoader(bytes);
+	if (!loader) {
+		_failed = true;
+		return;
+	}
+	_instance = std::make_unique<Instance>(
+		std::make_shared<::Media::Streaming::Document>(std::move(loader)),
+		nullptr);
+	if (!_instance->valid()) {
+		_failed = true;
+		return;
+	}
+	_instance->lockPlayer();
+	_instance->player().updates(
+	) | rpl::on_next_error([=](Update &&update) {
+		v::match(update.data, [&](UpdateVideo &data) {
+			if ((_till > _from) && (data.position >= _till)) {
+				restart();
+				return;
+			}
+			repaint();
+		}, [&](Information &) {
+			repaint();
+		}, [&](Finished) {
+			restart();
+		}, [&](const auto &) {
+		});
+	}, [=](Error &&) {
+		_failed = true;
+	}, _instance->lifetime());
+	restart();
+}
+
+std::shared_ptr<Ui::DynamicImage> RangeRoundPreview::clone() {
+	Unexpected("RangeRoundPreview::clone.");
+}
+
+void RangeRoundPreview::repaint() {
+	if (const auto onstack = _repaint) {
+		onstack();
+	}
+}
+
+void RangeRoundPreview::restart() {
+	if (!_instance || _failed) {
+		return;
+	}
+	auto options = ::Media::Streaming::PlaybackOptions();
+	options.mode = ::Media::Streaming::Mode::Video;
+	options.position = _from;
+	options.loop = false;
+	_instance->play(options);
+}
+
+void RangeRoundPreview::setRange(crl::time from, crl::time till) {
+	from = std::max(from, crl::time(0));
+	if (_from == from && _till == till) {
+		return;
+	}
+	_from = from;
+	_till = till;
+	restart();
+}
+
+QImage RangeRoundPreview::image(int size) {
+	if (!_instance
+		|| _failed
+		|| !_instance->player().ready()
+		|| _instance->player().videoSize().isEmpty()) {
+		return {};
+	}
+	const auto full = QSize(size, size) * style::DevicePixelRatio();
+	if (_roundingMask.size() != full) {
+		_roundingMask = Images::EllipseMask(full);
+	}
+	auto result = _instance->frameWithInfo({
+		.resize = full,
+		.outer = full,
+		.mask = _roundingMask,
+	}).image;
+	_instance->markFrameShown();
+	return result;
+}
+
+void RangeRoundPreview::subscribeToUpdates(Fn<void()> callback) {
+	_repaint = std::move(callback);
+}
 
 class SoundedPreview final : public Ui::DynamicImage {
 public:
@@ -688,6 +805,9 @@ public:
 	void playPause();
 	[[nodiscard]] std::shared_ptr<Ui::DynamicImage> videoPreview();
 	[[nodiscard]] rpl::producer<> trimApplied() const;
+	[[nodiscard]] rpl::producer<> trimRangeChanges() const;
+	[[nodiscard]] std::pair<crl::time, crl::time> previewRange() const;
+	void toggleRoundPlayback();
 
 	[[nodiscard]] rpl::lifetime &lifetime();
 
@@ -717,7 +837,11 @@ private:
 		VoiceWaveform waveform,
 		bool resetSelection);
 	bool _trimming = false;
+	bool _loopPlayback = false;
+	crl::time _lastPlaybackStart = 0;
+	base::Timer _deferredPause;
 	rpl::event_stream<> _trimApplied;
+	rpl::event_stream<> _trimRangeChanges;
 	void updateControlGeometry();
 	void updateTrimGeometry();
 	[[nodiscard]] TrimGeometry computeTrimGeometry(
@@ -818,6 +942,13 @@ ListenWrap::ListenWrap(
 }
 
 void ListenWrap::init() {
+	_deferredPause.setCallback([=] {
+		const auto state = ::Media::Player::instance()->getState(
+			AudioMsgId::Type::Voice);
+		if (isInPlayer(state) && ShowPauseIcon(state.state)) {
+			playPause();
+		}
+	});
 	auto deleteShow = _showProgress.value(
 	) | rpl::map([](auto value) {
 		return value == 1.;
@@ -1112,6 +1243,7 @@ void ListenWrap::initPlayButton() {
 	}, _playPauseButton->lifetime());
 
 	_playPauseButton->setClickedCallback([=] {
+		_loopPlayback = false;
 		playPause();
 	});
 
@@ -1229,12 +1361,27 @@ void ListenWrap::initPlayProgress() {
 			}
 			if (ShowPauseIcon(state.state)
 				&& (progress >= (rightBoundary - kTrimPlaybackEpsilon))) {
+				if (_loopPlayback) {
+					_lastPlaybackStart = crl::now();
+					*trimPlaybackSeekInProgress = true;
+					instance()->startSeeking(voice);
+					instance()->finishSeeking(voice, leftBoundary);
+					*trimPlaybackSeekInProgress = false;
+					return;
+				}
 				instance()->stop(voice, true);
 				_playProgress = anim::value(leftBoundary, leftBoundary);
 				_parent->update(_waveformFgRect);
 				return;
 			}
 			progress = std::clamp(progress, leftBoundary, rightBoundary);
+		}
+		if (_loopPlayback && IsStoppedAtEnd(state.state)) {
+			crl::on_main(this, [=] {
+				if (_loopPlayback) {
+					playPause();
+				}
+			});
 		}
 		if (IsStopped(state.state)) {
 			_playProgress = playbackTrimmed
@@ -1341,6 +1488,7 @@ void ListenWrap::initPlayProgress() {
 				if (isRelease) {
 					*dragMode = DragMode::None;
 					updateCursor(pos);
+					_trimRangeChanges.fire({});
 				}
 			}
 			return;
@@ -1698,6 +1846,25 @@ rpl::producer<> ListenWrap::trimApplied() const {
 	return _trimApplied.events();
 }
 
+rpl::producer<> ListenWrap::trimRangeChanges() const {
+	return _trimRangeChanges.events();
+}
+
+std::pair<crl::time, crl::time> ListenWrap::previewRange() const {
+	if (const auto range = selectedTrimRange()) {
+		return { range->from, range->till };
+	}
+	return { 0, 0 };
+}
+
+void ListenWrap::toggleRoundPlayback() {
+	const auto state = ::Media::Player::instance()->getState(
+		AudioMsgId::Type::Voice);
+	const auto playing = isInPlayer(state) && ShowPauseIcon(state.state);
+	_loopPlayback = !playing;
+	playPause();
+}
+
 void ListenWrap::updateDurationText() {
 	_duration = FormatTrimDuration(selectedDuration());
 	_durationWidth = _durationFont->width(_duration);
@@ -1735,7 +1902,20 @@ void ListenWrap::prepareForSendAnimation() {
 }
 
 void ListenWrap::playPause() {
-	::Media::Player::instance()->playPause({ _document, FullMsgId() });
+	const auto player = ::Media::Player::instance();
+	const auto state = player->getState(AudioMsgId::Type::Voice);
+	const auto playing = isInPlayer(state) && ShowPauseIcon(state.state);
+	const auto now = crl::now();
+	if (playing && (now - _lastPlaybackStart) < kPauseAfterStartDelay) {
+		_deferredPause.callOnce(
+			kPauseAfterStartDelay - (now - _lastPlaybackStart));
+		return;
+	}
+	_deferredPause.cancel();
+	if (!playing) {
+		_lastPlaybackStart = now;
+	}
+	player->playPause({ _document, FullMsgId() });
 }
 
 QRect ListenWrap::computeWaveformRect(const QRect &centerRect) const {
@@ -3044,19 +3224,22 @@ void VoiceRecordBar::stopRecording(StopType type, bool ttlBeforeHide) {
 						_cancelFont);
 					_listenChanges.fire({});
 
-					using SilentPreview = ::Media::Streaming::RoundPreview;
-					recorder->showPreview(
-						std::make_shared<SilentPreview>(
-							_data.content,
-							recorder->previewSize()),
-						_listen->videoPreview());
+					const auto preview = std::make_shared<RangeRoundPreview>(
+						_data.content);
+					recorder->showPreview(preview, _listen->videoPreview());
+					_listen->trimRangeChanges(
+					) | rpl::on_next([=] {
+						if (_listen) {
+							const auto range = _listen->previewRange();
+							preview->setRange(range.first, range.second);
+						}
+					}, _listen->lifetime());
 					_listen->trimApplied(
 					) | rpl::on_next([=] {
 						if (_listen && _videoRecorder) {
 							_videoRecorder->showPreview(
-								std::make_shared<SilentPreview>(
-									_data.content,
-									_videoRecorder->previewSize()),
+								std::make_shared<RangeRoundPreview>(
+									_data.content),
 								_listen->videoPreview());
 						}
 					}, _listen->lifetime());
@@ -3570,7 +3753,7 @@ bool VoiceRecordBar::createVideoRecorder() {
 	_videoRecorder->previewClicks(
 	) | rpl::on_next([=] {
 		if (_listen) {
-			_listen->playPause();
+			_listen->toggleRoundPlayback();
 		}
 	}, _videoCapturerLifetime);
 

@@ -225,6 +225,7 @@ void VideoTimeline::zoomIn() {
 	const auto till = from + span;
 	_grabShift = _lastPosition.x() - xAtView({ from, till }, time);
 	animateViewTo(from, till);
+	_zoomChanges.fire({ from, till });
 }
 
 void VideoTimeline::zoomOut() {
@@ -233,6 +234,7 @@ void VideoTimeline::zoomOut() {
 	_zoomStage = 0;
 	if (_viewFrom > 0 || _viewTill < _duration) {
 		animateViewTo(0, _duration);
+		_zoomChanges.fire({ 0, 0 });
 	}
 }
 

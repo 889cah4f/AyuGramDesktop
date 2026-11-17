@@ -1854,24 +1854,67 @@ void InnerWidget::updateSelected() {
 				+ st::msgServiceFont->height
 				+ st::msgServicePadding.top();
 			const auto dateMargin = st::msgServiceMargin.top();
+			const auto scrollDateOpacity = _scrollDateOpacity.value(
+				_scrollDateShown ? 1. : 0.);
 			auto dateView = (Element*)nullptr;
-			if (view->displayDate()
-				&& itemPoint.y() >= dateMargin
-				&& itemPoint.y() < dateMargin + dateHeight) {
-				dateView = view;
-			} else if (_visibleTopItem
-				&& _scrollDateOpacity.value(_scrollDateShown ? 1. : 0.) > 0.
-				&& point.y() >= _visibleTop + dateMargin
-				&& point.y() < _visibleTop + dateMargin + dateHeight) {
-				dateView = _visibleTopItem;
+			auto lowestInOneDayItemBottom = -1;
+			for (const auto &owned : _items) {
+				const auto candidate = owned.get();
+				const auto itemtop = itemTop(candidate);
+				const auto itembottom = itemtop + candidate->height();
+				if (itemtop >= _visibleBottom) {
+					continue;
+				}
+				if (lowestInOneDayItemBottom < 0
+					&& candidate->isInOneDayWithPrevious()) {
+					lowestInOneDayItemBottom = itembottom
+						- candidate->marginBottom();
+				}
+				const auto shown = candidate->displayDate()
+					|| (!candidate->data()->isEmpty()
+						&& itemtop <= _visibleTop);
+				if (shown) {
+					if (lowestInOneDayItemBottom < 0) {
+						lowestInOneDayItemBottom = itembottom
+							- candidate->marginBottom();
+					}
+					const auto dateTop = std::min(
+						std::max(itemtop, _visibleTop) + dateMargin,
+						lowestInOneDayItemBottom - dateHeight);
+					if (dateTop + dateHeight <= point.y()) {
+						break;
+					}
+					if (dateTop <= point.y()) {
+						const auto inPlace = candidate->displayDate()
+							&& (dateTop < itemtop + dateMargin + dateHeight);
+						if (inPlace || scrollDateOpacity > 0.) {
+							dateView = candidate;
+						}
+						break;
+					}
+				}
+				if (!candidate->isInOneDayWithPrevious()) {
+					lowestInOneDayItemBottom = -1;
+				}
+				if (itemtop <= _visibleTop) {
+					break;
+				}
 			}
 			if (dateView) {
 				const auto date = dateView->dateTime().date();
-				const auto dateWidth = st::msgServiceFont->width(
-						langDayOfMonthFull(date))
+				const auto badge = dateView->Get<HistoryView::DateBadge>();
+				const auto dateWidth = (badge
+						? badge->width
+						: st::msgServiceFont->width(langDayOfMonthFull(date)))
 					+ st::msgServicePadding.left()
 					+ st::msgServicePadding.right();
-				const auto dateLeft = (width() - dateWidth) / 2;
+				const auto maxWidth = std::min(
+					dateView->width(),
+					HistoryView::WideChatWidth());
+				const auto dateLeft = st::msgServiceMargin.left()
+					+ (maxWidth
+						- 2 * st::msgServiceMargin.left()
+						- dateWidth) / 2;
 				if (point.x() >= dateLeft
 					&& point.x() < dateLeft + dateWidth) {
 					_dateLinkDate = date;

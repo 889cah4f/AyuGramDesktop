@@ -57,6 +57,10 @@ public:
 	[[nodiscard]] rpl::producer<bool> draggingChanges() const {
 		return _draggingChanges.events();
 	}
+	[[nodiscard]] auto zoomChanges() const
+	-> rpl::producer<std::pair<crl::time, crl::time>> {
+		return _zoomChanges.events();
+	}
 
 	void setPlaybackPosition(crl::time position);
 
@@ -65,6 +69,9 @@ public:
 	[[nodiscard]] QPoint coverDot() const;
 
 	[[nodiscard]] bool draggingHead() const;
+	[[nodiscard]] crl::time currentGrabTime() const {
+		return grabbedTime();
+	}
 
 	[[nodiscard]] int resizeGetHeight(int newWidth) override;
 
@@ -149,6 +156,7 @@ private:
 	rpl::event_stream<crl::time> _trimChanges;
 	rpl::event_stream<crl::time> _coverChanges;
 	rpl::event_stream<bool> _draggingChanges;
+	rpl::event_stream<std::pair<crl::time, crl::time>> _zoomChanges;
 
 };
 

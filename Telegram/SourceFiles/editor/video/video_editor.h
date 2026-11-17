@@ -70,6 +70,8 @@ private:
 	void refreshQualityLevels();
 	void handleUpdate(Media::Streaming::Update &&update);
 	void restart(crl::time position);
+	void prepareScrubFrames(crl::time from, crl::time till);
+	[[nodiscard]] bool showScrubFrame(crl::time position);
 	void setupTapToPause();
 	void updateBubble();
 	void startCapture();
@@ -123,6 +125,15 @@ private:
 	QTransform _frameMatrix;
 	QRect _innerRect;
 	QImage _lastFrame;
+	std::vector<QImage> _scrubFrames;
+	crl::time _scrubFrom = 0;
+	crl::time _scrubTill = 0;
+	crl::time _scrubStep = 0;
+	std::shared_ptr<std::atomic<bool>> _scrubCancel;
+	QImage _scrubFrame;
+	crl::time _scrubFramePosition = 0;
+	crl::time _lastRestartTime = 0;
+	bool _awaitingSeekFrame = false;
 	bool _dragging = false;
 	bool _userPaused = false;
 	crl::time _bubbleCover = -1;

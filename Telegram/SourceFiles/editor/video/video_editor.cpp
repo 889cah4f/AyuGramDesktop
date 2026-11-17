@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "editor/video/video_quality_slider.h"
 #include "editor/video/video_timeline.h"
 #include "lang/lang_keys.h"
+#include "media/media_video_frames.h"
 #include "media/streaming/media_streaming_document.h"
 #include "media/streaming/media_streaming_instance.h"
 #include "media/streaming/media_streaming_loader_local.h"
@@ -34,7 +35,16 @@ namespace {
 
 using Media::View::FlipSizeByRotation;
 
-constexpr auto kSeekThrottle = crl::time(120);
+constexpr auto kSeekThrottle = crl::time(60);
+constexpr auto kScrubStep = crl::time(33);
+constexpr auto kScrubMaxSide = 1280;
+constexpr auto kScrubMemoryBudget = int64(160) * 1024 * 1024;
+constexpr auto kScrubAhead = crl::time(3500);
+constexpr auto kScrubBehind = crl::time(500);
+constexpr auto kSeekFrameWait = crl::time(350);
+constexpr auto kSharpFrameDelay = crl::time(110);
+constexpr auto kScrubPrefetch = crl::time(2000);
+constexpr auto kScrubChunks = 4;
 
 constexpr auto kBubbleMinVisible = crl::time(600);
 
@@ -271,18 +281,47 @@ void VideoEditor::setupTimeline() {
 	};
 	const auto state = lifetime().make_state<State>();
 	state->timer.setCallback([=] {
-		if (state->pending >= 0) {
-			const auto position = state->pending;
-			state->pending = -1;
-			restart(position);
+		if (state->pending < 0) {
+			return;
 		}
+		if (_awaitingSeekFrame
+			&& (crl::now() - _lastRestartTime) < kSeekFrameWait) {
+			state->timer.callOnce(kSeekThrottle);
+			return;
+		}
+		const auto position = state->pending;
+		state->pending = -1;
+		restart(position);
 	});
 	const auto seek = [=](crl::time position) {
 		state->pending = position;
+		const auto cached = _dragging && showScrubFrame(position);
+		if (!cached && _dragging && _scrubStep > 0) {
+			if (position > _scrubTill) {
+				prepareScrubFrames(
+					std::max(position - kScrubBehind, crl::time(0)),
+					position + kScrubAhead);
+			} else if (position < _scrubFrom) {
+				prepareScrubFrames(
+					std::max(position - kScrubAhead, crl::time(0)),
+					position + kScrubBehind);
+			}
+		}
 		if (!state->timer.isActive()) {
-			state->timer.callOnce(kSeekThrottle);
+			state->timer.callOnce(cached ? kSharpFrameDelay : kSeekThrottle);
 		}
 	};
+
+	_timeline->zoomChanges(
+	) | rpl::on_next([=](std::pair<crl::time, crl::time> range) {
+		const auto covered = (_scrubStep > 0)
+			&& (range.first >= _scrubFrom)
+			&& (range.second <= _scrubTill);
+		if (range.second > range.first && covered) {
+			return;
+		}
+		prepareScrubFrames(range.first, range.second);
+	}, _timeline->lifetime());
 
 	_timeline->trimChanges(
 	) | rpl::on_next([=](crl::time edge) {
@@ -304,6 +343,20 @@ void VideoEditor::setupTimeline() {
 	_timeline->draggingChanges(
 	) | rpl::on_next([=](bool dragging) {
 		_dragging = dragging;
+		if (!dragging) {
+			_scrubFrame = QImage();
+			prepareScrubFrames(0, 0);
+		} else {
+			const auto grabbed = _timeline->currentGrabTime();
+			const auto covered = (_scrubStep > 0)
+				&& (grabbed >= _scrubFrom)
+				&& (grabbed <= _scrubTill);
+			if (grabbed >= 0 && !covered) {
+				prepareScrubFrames(
+					std::max(grabbed - kScrubPrefetch, crl::time(0)),
+					grabbed + kScrubPrefetch);
+			}
+		}
 		if (dragging) {
 			_draggingHead = _timeline->draggingHead();
 			if (_instance) {
@@ -795,6 +848,99 @@ void VideoEditor::updateBubble() {
 	_bubble->update();
 }
 
+void VideoEditor::prepareScrubFrames(crl::time from, crl::time till) {
+	if (_scrubCancel) {
+		_scrubCancel->store(true);
+		_scrubCancel = nullptr;
+	}
+	_scrubFrames.clear();
+	if (till <= from || _frameRect.isEmpty()) {
+		_scrubStep = 0;
+		return;
+	}
+	const auto count = int((till - from) / kScrubStep) + 1;
+	auto positions = std::vector<crl::time>();
+	positions.reserve(count);
+	for (auto i = 0; i != count; ++i) {
+		positions.push_back(from + i * kScrubStep);
+	}
+	_scrubFrom = from;
+	_scrubTill = from + (count - 1) * kScrubStep;
+	_scrubStep = kScrubStep;
+	_scrubFrames = std::vector<QImage>(count);
+
+	auto box = _frameRect.size() * style::DevicePixelRatio();
+	if (box.width() > kScrubMaxSide || box.height() > kScrubMaxSide) {
+		box.scale(kScrubMaxSide, kScrubMaxSide, Qt::KeepAspectRatio);
+	}
+	const auto frameBytes = int64(box.width()) * box.height() * 4;
+	if (frameBytes > 0 && frameBytes * count > kScrubMemoryBudget) {
+		const auto factor = std::sqrt(
+			double(kScrubMemoryBudget) / double(frameBytes * count));
+		box = QSize(
+			std::max(int(box.width() * factor), 1),
+			std::max(int(box.height() * factor), 1));
+	}
+	const auto cancel = std::make_shared<std::atomic<bool>>(false);
+	_scrubCancel = cancel;
+	const auto path = _path;
+	const auto content = _content;
+	const auto weak = base::make_weak(this);
+	const auto chunkSize = (count + kScrubChunks - 1) / kScrubChunks;
+	for (auto chunk = 0; chunk != kScrubChunks; ++chunk) {
+		const auto first = chunk * chunkSize;
+		const auto last = std::min(count, first + chunkSize);
+		if (first >= last) {
+			break;
+		}
+		auto part = std::vector<crl::time>(
+			positions.begin() + first,
+			positions.begin() + last);
+		crl::async([=, part = std::move(part)] {
+			Media::Video::ExtractFrames(path, content, {
+				.positions = part,
+				.box = box,
+			}, [&](int index, QImage &&frame) {
+				if (cancel->load()) {
+					return false;
+				}
+				const auto global = first + index;
+				crl::on_main(weak, [=, frame = std::move(frame)]() mutable {
+					if (cancel->load()
+						|| global >= int(_scrubFrames.size())) {
+						return;
+					}
+					_scrubFrames[global] = std::move(frame);
+				});
+				return true;
+			});
+		});
+	}
+}
+
+bool VideoEditor::showScrubFrame(crl::time position) {
+	if (_scrubFrames.empty() || _scrubStep <= 0) {
+		return false;
+	}
+	const auto count = int(_scrubFrames.size());
+	const auto index = int(base::SafeRound(
+		(position - _scrubFrom) / float64(_scrubStep)));
+	if (index < 0 || index >= count) {
+		return false;
+	}
+	for (auto delta = 0; delta != 4; ++delta) {
+		for (const auto i : { index - delta, index + delta }) {
+			if (i >= 0 && i < count && !_scrubFrames[i].isNull()) {
+				_scrubFrame = _scrubFrames[i];
+				_scrubFramePosition = position;
+				update();
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 void VideoEditor::restart(crl::time position) {
 	if (!_instance) {
 		return;
@@ -808,6 +954,8 @@ void VideoEditor::restart(crl::time position) {
 			_data.webmSticker)).copy();
 	}
 	_position = std::clamp(position, _from, _till);
+	_awaitingSeekFrame = true;
+	_lastRestartTime = crl::now();
 	auto options = PlaybackOptions();
 	options.mode = Mode::Video;
 	options.position = _position;
@@ -829,6 +977,13 @@ void VideoEditor::handleUpdate(Media::Streaming::Update &&update) {
 	}, [&](PreloadedVideo) {
 	}, [&](UpdateVideo &data) {
 		_position = data.position;
+		_awaitingSeekFrame = false;
+		if (_dragging
+			&& !_scrubFrame.isNull()
+			&& std::abs(data.position - _scrubFramePosition)
+				<= 2 * kScrubStep) {
+			_scrubFrame = QImage();
+		}
 		if (held()) {
 			_instance->pause();
 			this->update();
@@ -963,7 +1118,9 @@ void VideoEditor::paint(QPainter &p) {
 		return;
 	}
 	auto frame = QImage();
-	if (_instance
+	if (_dragging && !_scrubFrame.isNull()) {
+		frame = _scrubFrame;
+	} else if (_instance
 		&& _instance->player().ready()
 		&& !_instance->player().videoSize().isEmpty()) {
 		frame = _instance->frame(FrameRequestFor(

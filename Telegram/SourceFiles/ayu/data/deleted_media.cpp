@@ -447,8 +447,6 @@ void saveMediaForMessage(not_null<HistoryItem*> item, AyuMessageBase &message) {
 		: document->createMediaView();
 	if (const auto thumb = view->thumbnail()) {
 		SaveThumbnail(thumb->original(), base, message);
-	} else if (const auto good = view->goodThumbnail()) {
-		SaveThumbnail(good->original(), base, message);
 	}
 	const auto bytes = view->bytes();
 	if (!bytes.isEmpty()) {
