@@ -47,6 +47,22 @@ jobs:
           key: macOS-libs-${{ hashFiles('tdesktop/Telegram/build/prepare/prepare.py', 'tdesktop/Telegram/build/qt_version.py') }}
           restore-keys: macOS-libs-
 
+      - name: Force libjxl to x86_64 (skcms -march breaks the arm64 slice)
+        run: |
+          python3 - <<'PY'
+          import re, pathlib
+          f = pathlib.Path('tdesktop/Telegram/build/prepare/prepare.py')
+          src = f.read_text()
+          a = src.index("stage('libjxl'")
+          b = src.index("stage('", a + 1)
+          block = src[a:b]
+          new = re.sub(r'CMAKE_OSX_ARCHITECTURES\s*=\s*"?[^"\\\n]*;[^"\\\n]*"?',
+                       'CMAKE_OSX_ARCHITECTURES="x86_64"', block)
+          print(new)
+          assert new != block, 'no universal arch found in libjxl stage; see block above'
+          f.write_text(src[:a] + new + src[b:])
+          PY
+
       - name: Libraries
         timeout-minutes: 300
         run: ./tdesktop/Telegram/build/prepare/mac.sh silent
