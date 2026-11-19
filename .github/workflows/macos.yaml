@@ -1,0 +1,90 @@
+name: macOS build
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: macos-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: KHXRVA/AyuGramDesktop
+          ref: ae307e1dc403246748f57afaeae46b02a713ca71
+          path: tdesktop
+          submodules: recursive
+
+      - name: Record library versions
+        run: git -C tdesktop submodule status --recursive
+
+      - name: Set up
+        run: |
+          sudo chown -R "$(whoami):admin" /usr/local/share
+          brew install automake libtool meson nasm ninja pkg-config gnu-tar
+          sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          sudo mdutil -a -i off
+          for app in /Applications/Xcode*.app; do 
+            [[ "$app" == *26.3* ]] || sudo rm -rf "$app"
+          done
+          sudo rm -rf /Library/Developer/CoreSimulator/* "$HOME/Library/Developer/CoreSimulator"/* "$HOME/Library/Android" /usr/local/lib/android
+          df -h /
+
+      - name: Restore libraries cache
+        id: libs-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: macOS-libs-${{ hashFiles('tdesktop/Telegram/build/prepare/prepare.py', 'tdesktop/Telegram/build/qt_version.py') }}
+          restore-keys: macOS-libs-
+
+      - name: Libraries
+        timeout-minutes: 300
+        run: ./tdesktop/Telegram/build/prepare/mac.sh silent
+
+      - name: Trim libraries
+        if: always()
+        run: |
+          find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
+
+      - name: Save libraries cache
+        if: always() && steps.libs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: ${{ steps.libs-cache.outputs.cache-primary-key }}
+
+      - name: Build
+        run: |
+          cd tdesktop/Telegram
+          ./configure.sh \
+            -D CMAKE_CONFIGURATION_TYPES=Release \
+            -D DESKTOP_APP_MAC_ARCH=x86_64 \
+            -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -D TDESKTOP_API_ID=2040 \
+            -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627
+          cmake --build ../out --config Release --parallel
+
+      - name: Package
+        run: |
+          cd tdesktop/out/Release
+          lipo -info AyuGram.app/Contents/MacOS/AyuGram
+          otool -l AyuGram.app/Contents/MacOS/AyuGram | grep -A4 LC_BUILD_VERSION
+          ditto -c -k --sequesterRsrc --keepParent AyuGram.app "$GITHUB_WORKSPACE/AyuGram.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AyuGram-macOS-x86_64
+          path: AyuGram.zip
+          compression-level: 0
