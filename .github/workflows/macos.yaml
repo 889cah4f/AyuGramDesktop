@@ -47,20 +47,36 @@ jobs:
           key: macOS-libs-${{ hashFiles('tdesktop/Telegram/build/prepare/prepare.py', 'tdesktop/Telegram/build/qt_version.py') }}
           restore-keys: macOS-libs-
 
-      - name: Force libjxl to x86_64 (skcms -march breaks the arm64 slice)
+      - name: Build libjxl per-arch and combine (universal, no cross-arch -march)
         run: |
           python3 - <<'PY'
-          import re, pathlib
+          import pathlib
           f = pathlib.Path('tdesktop/Telegram/build/prepare/prepare.py')
-          src = f.read_text()
-          a = src.index("stage('libjxl'")
-          b = src.index("stage('", a + 1)
-          block = src[a:b]
-          new = re.sub(r'CMAKE_OSX_ARCHITECTURES\s*=\s*"?[^"\\\n]*;[^"\\\n]*"?',
-                       'CMAKE_OSX_ARCHITECTURES="x86_64"', block)
-          print(new)
-          assert new != block, 'no universal arch found in libjxl stage; see block above'
-          f.write_text(src[:a] + new + src[b:])
+          s = f.read_text()
+          i = s.index("stage('libjxl'")
+          m = s.index('mac:', i)
+          e = s.index('""")', m)
+          new_mac = '''mac:
+              buildJxl() {
+                  arch=$1
+                  CFLAGS="-arch $arch" CXXFLAGS="-arch $arch" cmake -B build.$arch . -D CMAKE_OSX_ARCHITECTURES=$arch -D CMAKE_SYSTEM_NAME=Darwin -D CMAKE_SYSTEM_PROCESSOR=$arch -D CMAKE_BUILD_TYPE=MinSizeRel ${cmake_defines}
+                  cmake --build build.$arch
+                  cmake --install build.$arch --prefix "$PWD/out.$arch"
+              }
+              buildJxl arm64
+              buildJxl x86_64
+              mkdir -p "$USED_PREFIX/lib" "$USED_PREFIX/include"
+              for f in out.x86_64/lib/*.a; do
+                  n=$(basename "$f")
+                  lipo -create "out.arm64/lib/$n" "$f" -output "$USED_PREFIX/lib/$n"
+              done
+              cp -R out.x86_64/include/. "$USED_PREFIX/include/"
+              cp -R out.x86_64/lib/pkgconfig "$USED_PREFIX/lib/" || true
+              cp -R out.x86_64/lib/cmake "$USED_PREFIX/lib/" || true
+          '''
+          s = s[:m] + new_mac + s[e:]
+          f.write_text(s)
+          print(new_mac)
           PY
 
       - name: Libraries
