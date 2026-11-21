@@ -112,7 +112,7 @@ jobs:
         run: |
           cd tdesktop/out/Release
           lipo -info AyuGram.app/Contents/MacOS/AyuGram
-          otool -l AyuGram.app/Contents/MacOS/AyuGram | grep -A4 LC_BUILD_VERSION
+          otool -l AyuGram.app/Contents/MacOS/AyuGram | grep -A4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX'
           ditto -c -k --sequesterRsrc --keepParent AyuGram.app "$GITHUB_WORKSPACE/AyuGram.zip"
 
       - uses: actions/upload-artifact@v4
